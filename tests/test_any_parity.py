@@ -698,3 +698,11 @@ NAMES = ("list_changes", "get_version", "get_record_version", "diff_versions",
          "list_join_requests", "answer_join_request", "add_members",
          "set_member_permissions", "remove_members", "transfer_ownership",
          "leave_space", "stop_sharing")
+
+
+def test_create_type_without_drafts_does_not_read_properties():
+    # the store-ensure path: an existing type, no drafts → no property read
+    fx = _kind_rig([])
+    r = client(fx).create_type("s1", {"name": "Job", "xKey": "task", "body": False})
+    assert r["created"] is False and r["unchangedFields"] == ["name"]
+    assert not [p for v, p, _ in fx.calls if p.endswith("/properties")]

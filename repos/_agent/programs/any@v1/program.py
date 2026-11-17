@@ -3847,6 +3847,8 @@ class _Client:
                   and not (body[k] in (None, "", False) and row.get(k) in (None, "", False))]
         if fields:
             out["unchangedFields"] = fields
+        if not props:
+            return out   # no drafts → nothing to compare, no read
         try:
             _, patches, moves = self._plan_props(space, did, row.get("xKey") or did, props)
         except ValueError:
