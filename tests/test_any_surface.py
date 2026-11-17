@@ -64,7 +64,8 @@ def test_signature_renders_spaceconfig_first_without_self():
     app, mod, _ = _kernel()
     assert app.describe(mod.create_object).startswith(
         "create_object(spaceConfig, body, create_options=True, parent=None, folder=None) [mutator]")
-    assert app.describe(mod.list_spaces).startswith("list_spaces(raw=False) [getter]")
+    assert app.describe(mod.list_spaces).startswith(
+        "list_spaces(raw=False, status=None) [getter]")
 
 
 def test_unlisted_plumbing_is_callable_but_out_of_listings():

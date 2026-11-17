@@ -394,16 +394,17 @@ def _icon_v2(assignment):
                                      separators=(",", ":"), ensure_ascii=False)
 
 
-def _format_type_icon(icon):
-    """A type's `icon` draft -> the stored string; ValueError names
-    the shape. Lucide glyphs only: the client's type picker shows no
-    emoji."""
+def _format_type_icon(icon, what="type"):
+    """The `icon` draft of a definition (a type or a collection) ->
+    the stored string; ValueError names the shape. Lucide glyphs
+    only, never an emoji: the client's pickers show none."""
     if not isinstance(icon, dict) or not icon.get("glyph"):
-        raise ValueError(f'a type\'s "icon" must be {_TYPE_ICON_SHAPE}')
+        raise ValueError(f'a {what}\'s "icon" must be {_TYPE_ICON_SHAPE} — '
+                         "a Lucide glyph, never an emoji")
     if set(icon) - {"glyph"}:
         raise ValueError(
-            f'a type\'s "icon" takes only "glyph" (got {sorted(set(icon) - {"glyph"})}); '
-            "the colour is the user's, in the client's picker")
+            f'a {what}\'s "icon" takes only "glyph" (got {sorted(set(icon) - {"glyph"})}); '
+            "no emoji, and the colour is the user's, in the client's picker")
     g = icon["glyph"]
     if not isinstance(g, str) or len(g) > 256 or not _ICON_GLYPH_RE.match(g):
         raise ValueError(
@@ -466,6 +467,62 @@ _OPTION_COLORS = ("grey", "yellow", "orange", "red", "pink", "purple",
 _PINNED_PATHS = ("id", "kind", "scope", "items", "properties")
 _LEXID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _UNSET = object()   # encoder sentinel: value None ⇒ $unset
+
+
+_NO_VALUE = object()   # a value that does not convert to the new kind
+
+
+def _convert_value(v, kind):
+    """A stored property value as the same fact in another `kind`,
+    or _NO_VALUE when it has no honest reading there (the caller
+    reports it; nothing is guessed)."""
+    is_num = isinstance(v, (int, float)) and not isinstance(v, bool)
+    if kind == "string":
+        if isinstance(v, str):
+            return v
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if is_num:
+            return str(int(v)) if float(v).is_integer() else str(v)
+        if _is_instant(v):
+            return v["$date"]
+        if isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v):
+            return ", ".join(str(x) for x in v)
+    elif kind == "number":
+        if is_num:
+            return v
+        if isinstance(v, bool):
+            return 1 if v else 0
+        if isinstance(v, str):
+            try:
+                n = float(v.strip().replace(",", "."))
+            except ValueError:
+                return _NO_VALUE
+            return int(n) if n.is_integer() else n
+    elif kind == "boolean":
+        if isinstance(v, bool):
+            return v
+        if is_num:
+            return v != 0
+        if isinstance(v, str):
+            w = v.strip().lower()
+            if w in ("true", "yes", "y", "1", "on"):
+                return True
+            if w in ("false", "no", "n", "0", "off"):
+                return False
+    elif kind == "datetime":
+        if _is_instant(v):
+            return v
+        if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}($|T)", v.strip()):
+            d = v.strip()
+            return {"$date": d if "T" in d else d + "T00:00:00.000Z"}
+    elif kind == "array":
+        if isinstance(v, list):
+            return v
+    elif kind == "object":
+        if isinstance(v, dict) and not _is_instant(v):
+            return v
+    return _NO_VALUE
 
 
 def _lexid_after(pos):
@@ -2045,6 +2102,30 @@ class _Client:
             by_scope.setdefault(pdef.get("scope") or "synced", {})[pid] = v
         return list(by_scope.values())
 
+    @_public('getter', label="Reading {object} in {space}")
+    def get_object(self, space, object_id, normalize=True):
+        """One object by id → its row, shaped like a query_objects row; None if it is gone.
+
+        One call, with no filter to build: `uri` first, then `any`
+        (name, type, collections), the property groups by xKey, and
+        `createdAt` / `modifiedAt`. The body is `get_markdown`.
+        `normalize=False` returns the raw wire record."""
+        try:
+            r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}")
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        rec = r.get("record")
+        if not isinstance(rec, dict):
+            return None
+        if not normalize:
+            return rec
+        self._refresh_catalog_for(space, [rec])
+        out = [self._normalize_record(space, rec)]
+        self._hydrate_links(space, out)   # ADR-022 §3
+        return self._linked(space, out[0], "id")
+
     @_public('getter', listed=False)
     def undefined_objects(self, space):
         """The ids of the objects whose type, or one of whose
@@ -2362,6 +2443,221 @@ class _Client:
             self._members_cache[space] = rows
         return list(rows)
 
+    @_public('getter')
+    def get_member(self, space, identity=None):
+        """One member of the space → {identity, name, permission, status}; None if not a member.
+
+        Without `identity`: this account, so `permission` (owner /
+        writer / reader) says what the agent may do in the space
+        before it tries a write. Read fresh, not from the run's
+        roster cache."""
+        try:
+            r = self._call("get", f"/v1/spaces/{space}/members/"
+                           + (_urlquote(identity) if identity else "me"))
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        if not r.get("identity"):
+            return None
+        return {k: r.get(k) for k in ("identity", "name", "permission", "status")}
+
+    # --- sharing: invites, the guest key, access control (parity §C10) --------
+    # Every write here changes who can read or write a space. The
+    # docstrings say "ask the user first": the agent proposes, the
+    # user decides. Roles: reader, writer, admin, owner.
+    def _acl(self, space, op, body=None):
+        r = self._call("post", f"/v1/spaces/{space}/acl/{op}", body)
+        self._members_cache.pop(space, None)
+        return r
+
+    @_public('getter')
+    def list_invites(self, space, record_id=None):
+        """The space's active invites → [{recordId, permission, inviteToken?}].
+
+        `inviteToken` is the code a person joins with; only the
+        account that made the invite reads it back, so it can be
+        absent. `permission` is "none": the owner picks the role
+        when they accept the join request. `record_id` narrows to
+        one invite ([] when it is gone)."""
+        if record_id:
+            try:
+                r = self._call("get", f"/v1/spaces/{space}/invites/{_urlquote(record_id)}")
+            except AnyError as e:
+                if e.status == 404:
+                    return []
+                raise
+            return [r] if r.get("recordId") else list(r.get("invites") or [])
+        return self._call("get", f"/v1/spaces/{space}/invites").get("invites") or []
+
+    @_public('mutator', label="Making an invite to {space}")
+    def create_invite(self, space):
+        """Make the space's invite → {spaceId, inviteToken}; ask the user first.
+
+        It REPLACES an earlier invite. Whoever holds the token can
+        ASK to join; the owner still accepts each request
+        (list_join_requests, answer_join_request). Owner only (403
+        acl.forbidden). It makes the space shared, which counts
+        against the plan's shared spaces (409 acl.limit_reached;
+        account_limits). Give the token to the user; do not post it
+        anywhere yourself."""
+        return self._call("post", f"/v1/spaces/{space}/invites")
+
+    @_public('mutator', label="Revoking an invite to {space}")
+    def revoke_invite(self, space, record_id=None):
+        """Revoke one invite (`record_id` from list_invites) or, without it, all; returns {}.
+
+        Ask the user first. The token stops working; members who
+        already joined stay."""
+        tail = f"/{_urlquote(record_id)}" if record_id else ""
+        return self._call("delete", f"/v1/spaces/{space}/invites{tail}")
+
+    @_public('mutator', label="Making a public read link for {space}")
+    def create_guest_key(self, space):
+        """Make the space's public READ-ONLY key → {spaceId, inviteToken}; ask the user first.
+
+        ANYONE who holds the token reads the whole space, with no
+        request and no approval. One for a space; a second call
+        returns the same token. Owner only."""
+        return self._call("post", f"/v1/spaces/{space}/guest-key")
+
+    @_public('mutator', label="Revoking the public read link of {space}")
+    def revoke_guest_key(self, space):
+        """Revoke the space's public read-only key; returns {}; ask the user first.
+
+        Every guest stops receiving new content, and the old token
+        is dead for good. 404 guest_key.not_found when there is
+        none."""
+        return self._call("delete", f"/v1/spaces/{space}/guest-key")
+
+    @_public('mutator', scoped=False, label="Joining a space")
+    def join_space(self, invite_token, name=None):
+        """Join a space with an invite token → its space row; ask the user first.
+
+        A normal invite: the row reads status "joining" until the
+        owner accepts. A guest token: the space loads read-only at
+        once. `name` is shown to the owner with the request. 400
+        invite.invalid, 410 invite.revoked, 409 space.already_member."""
+        body = {"inviteToken": invite_token}
+        if name:
+            body["metadata"] = {"name": name}
+        r = self._call("post", "/v1/spaces/join", body)
+        self._spaces_cache = None
+        return _trim_space_row(r)
+
+    @_public('mutator', scoped=False, label="Withdrawing a join request")
+    def cancel_join(self, space_id):
+        """Withdraw this account's pending request to join a space; returns {}.
+
+        `space_id` is a row of list_spaces(status="joining").
+        409 space.join_not_pending when the owner already answered:
+        read the row again."""
+        r = self._call("post", f"/v1/spaces/{space_id}/acl/cancel-join")
+        self._spaces_cache = None
+        return r
+
+    @_public('mutator', scoped=False, label="Answering a space invite")
+    def answer_space_invite(self, space_id, accept):
+        """Accept or decline a space that another account added the user to; ask the user first.
+
+        `space_id` is a row of list_spaces(status="invite_pending").
+        `accept=True` loads the space → its row (the
+        load can continue in the background). `accept=False` hides
+        the invite on every device → {}; a later accept still
+        works."""
+        if accept:
+            r = self._call("post", f"/v1/spaces/{space_id}/invite/accept")
+            self._spaces_cache = None
+            return _trim_space_row(r)
+        return self._call("post", f"/v1/spaces/{space_id}/invite/decline")
+
+    @_public('getter')
+    def list_join_requests(self, space):
+        """Who waits to join the space → [{recordId, identity, name?, description?}]."""
+        return self._call("get", f"/v1/spaces/{space}/members/requests").get("requests") or []
+
+    @_public('mutator', label="Answering a join request for {space}")
+    def answer_join_request(self, space, identity, permission=None):
+        """Accept or decline one join request; returns {}; ask the user first.
+
+        `identity` from list_join_requests. `permission` "reader",
+        "writer" or "admin" accepts with that role; None declines.
+        409 acl.limit_reached = the plan has no free seat for that
+        role."""
+        if permission is None:
+            return self._acl(space, "decline", {"identity": identity})
+        req = next((r for r in self.list_join_requests(space)
+                    if r.get("identity") == identity), None)
+        if req is None:
+            raise ValueError(f"no pending join request from {identity} — "
+                             "list_join_requests(space) shows who waits")
+        return self._acl(space, "accept", {"requestRecordId": req.get("recordId"),
+                                           "permission": permission})
+
+    @_public('mutator', label="Adding members to {space}")
+    def add_members(self, space, accounts):
+        """Add accounts to the space by identity, with no invite; returns {}; ask the user first.
+
+        `accounts`: [{"identity", "permission": "reader" | "writer" |
+        "admin", "name"?}]. Each account gets a pending invite to
+        accept. Identities come from find_identities. It makes the
+        space shared (409 acl.limit_reached at the plan's limit)."""
+        rows = []
+        for a in accounts or []:
+            row = {"identity": a.get("identity"), "permission": a.get("permission")}
+            if a.get("name"):
+                row["metadata"] = {"name": a["name"]}
+            rows.append(row)
+        return self._acl(space, "add", {"accounts": rows})
+
+    @_public('mutator', label="Changing member roles in {space}")
+    def set_member_permissions(self, space, changes):
+        """Change members' roles → {}; ask the user first.
+
+        `changes`: {identity: "reader" | "writer" | "admin"}. One
+        batch. The owner's role moves only with
+        transfer_ownership."""
+        return self._acl(space, "permissions", {"changes": [
+            {"identity": i, "permission": p} for i, p in dict(changes or {}).items()]})
+
+    @_public('mutator', label="Removing members from {space}")
+    def remove_members(self, space, identities):
+        """Remove members from the space → {}; ask the user first; no undo.
+
+        `identities`: [account id]. They lose access to everything
+        written from now on (the read key rotates); what they
+        already hold stays on their devices."""
+        ids = [identities] if isinstance(identities, str) else list(identities or [])
+        return self._acl(space, "remove", {"identities": ids})
+
+    @_public('mutator', label="Handing over {space}")
+    def transfer_ownership(self, space, new_owner, old_owner_permission="admin"):
+        """Make another member the owner of the space → {}; ask the user first; no undo.
+
+        `new_owner` is a member's identity. The user keeps the role
+        `old_owner_permission` (admin / writer / reader). Only the
+        new owner can give it back."""
+        return self._acl(space, "ownership", {"newOwner": new_owner,
+                                              "oldOwnerPerm": old_owner_permission})
+
+    @_public('mutator', label="Leaving {space}")
+    def leave_space(self, space):
+        """Take the user out of a space that someone else owns → {}; ask the user first.
+
+        The user loses access; the owner must add them again. The
+        owner cannot leave: transfer_ownership first."""
+        r = self._acl(space, "self-remove")
+        self._spaces_cache = None
+        return r
+
+    @_public('mutator', label="Ending the sharing of {space}")
+    def stop_sharing(self, space):
+        """Remove EVERY other member and every invite from the space → {}; no undo.
+
+        Ask the user first, and name the members who lose access
+        (list_members). The space stays, private to the owner."""
+        return self._acl(space, "stop-sharing")
+
     # the account-global identities directory: every account this one
     # has met in a shared space, with the spaces shared (the server's
     # GET /v1/identities; docs/19-links.md § u — identities)
@@ -2425,6 +2721,137 @@ class _Client:
         r = self._call("get", "/v1/account")
         return {"identity": r.get("id"),
                 "name": (r.get("metadata") or {}).get("name")}
+
+    # --- the account, this device, a space's private settings (parity §C10) ---
+    def _raw(self, verb, path, data=None, mime=None):
+        """One call whose body or reply is raw bytes → the effect reply.
+        `data` (a Blob, bytes or str) goes up as the body."""
+        payload = {"url": self._base + path}
+        if data is not None:
+            b = data if isinstance(data, Blob) else blob.of(data)  # noqa: F821 - guest globals
+            if not isinstance(data, Blob) and mime:  # noqa: F821
+                b = blob.from_bytes(bytes(b), mime)  # noqa: F821
+            payload["body"] = b
+            payload["headers"] = {"Content-Type": mime or b.mime}
+        reply = effect("http." + verb, payload)  # noqa: F821 - guest global
+        if reply["status"] >= 400:
+            body = reply.get("body")
+            try:
+                data = json.loads(body) if isinstance(body, str) and body else {}
+            except ValueError:
+                data = {}
+            err = data.get("error", {}) if isinstance(data, dict) else {}
+            raise AnyError(reply["status"], err.get("code", "unknown"),
+                           err.get("message", ""))
+        return reply
+
+    def _icon(self, path):
+        """An avatar route → {mime, size, blob}, None when there is none."""
+        try:
+            reply = self._raw("get", path)
+        except AnyError as e:
+            if e.status == 404:
+                return None
+            raise
+        body = reply.get("body")
+        mime = (reply.get("headers") or {}).get("content-type", "application/octet-stream")
+        mime = mime.split(";", 1)[0].strip()
+        b = (Blob.from_ref(body) if Blob.is_ref(body)  # noqa: F821 - guest globals
+             else blob.from_bytes(body or "", mime))  # noqa: F821
+        return {"mime": b.mime, "size": b.size, "blob": b}
+
+    @_public('getter', scoped=False)
+    def account_limits(self):
+        """What the network grants this account → {"storage": {…}, "sharedSpaces": {…}}.
+
+        `storage`: {limitBytes, usageBytes, fetchedAt}; `sharedSpaces`:
+        {limit, fetchedAt}. `storage` is the file pool of all the account's spaces
+        (`limitBytes` 0 = the network grants no storage);
+        `sharedSpaces.limit` is how many shared spaces the account
+        may own. A part that the network has not answered yet is
+        absent. Read it before a large upload or before sharing a
+        space."""
+        return self._call("get", "/v1/account/limits")
+
+    @_public('getter', scoped=False)
+    def account_icon(self):
+        """This account's avatar → {mime, size, blob}, or None when none is set.
+
+        `blob` is a handle (see file_content). 409 file.not_available
+        = the image is not on this device yet: retry later."""
+        return self._icon("/v1/account/icon")
+
+    @_public('getter', scoped=False)
+    def identity_icon(self, identity):
+        """Another account's avatar → {mime, size, blob}, or None when it has none.
+
+        `identity` is an account id (a members row, a chat `creator`).
+        The bytes come from that account: never run or render them as
+        a document."""
+        return self._icon(f"/v1/identities/{_urlquote(identity)}/icon")
+
+    @_public('mutator', scoped=False)
+    def set_account_icon(self, data, name=None, mime=None):
+        """Set the user's avatar from an image → the profile {name, iconCid}; ask the user first.
+
+        `data`: a Blob, or bytes. A raster image (PNG, JPEG, GIF,
+        WebP, …; no SVG) of at most 1 MiB: 415 account.icon_not_image,
+        413 account.icon_too_large. Every contact sees the new image.
+        `data=None` removes the avatar and returns {}."""
+        if data is None:
+            return self._call("delete", "/v1/account/icon")
+        reply = self._raw("put", "/v1/account/icon" + self._qs(name=name), data, mime)
+        raw = reply.get("body")
+        return json.loads(raw) if isinstance(raw, str) and raw else {}
+
+    @_public('getter', scoped=False)
+    def local_discovery(self):
+        """Whether this device announces itself on the local network → {"enabled": bool}."""
+        return self._call("get", "/v1/local-discovery")
+
+    @_public('mutator', scoped=False)
+    def set_local_discovery(self, enabled):
+        """Switch local-network discovery on or off → {"enabled": bool}; ask the user first.
+
+        Off: the device stops looking for peers on the LAN within
+        seconds, so sync goes through the network nodes only. The
+        reply is the resulting state; it stays False while p2p is
+        off on the server."""
+        return self._call("put", "/v1/local-discovery", {"enabled": bool(enabled)})
+
+    @_public('getter')
+    def list_unread(self, space, cursor=None, limit=None):
+        """What became unread in the space on this device → {"changes": [...], "cursor"}.
+
+        Each change: {objectId, dataset, recordIds, tags, changeId},
+        oldest first; for chat, `tags` are message / mention /
+        reaction and `recordIds` are message ids. Without `cursor`
+        the call returns no changes and a cursor at the present: keep
+        it and pass it later to get what arrived since. Only what is
+        still unread is listed. For counts, read the `chat` group on
+        a chat's row. `limit` defaults to 100, capped at 1000."""
+        r = self._call("get", f"/v1/spaces/{space}/read-state/unread"
+                       + self._qs(cursor=cursor, limit=limit))
+        return {"changes": r.get("changes") or [], "cursor": r.get("cursor")}
+
+    @_public('mutator', label="Changing the settings of {space}")
+    def set_space_settings(self, space, set=None, unset=None):
+        """Patch the user's PRIVATE settings of a space; returns {} (wire: 204).
+
+        `set`: {key: value}, `unset`: [key]. The settings sync to the
+        user's own devices and no other member sees them. The server
+        reads `notifyMode` ("all" / "mentions" / "none") for push
+        notifications; other keys are the clients' own. Keys are
+        single-level, no dots. The name, description and icon of a
+        space are not here: see patch_space."""
+        body = {}
+        if set:
+            body["set"] = dict(set)
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("set_space_settings needs `set` and/or `unset`")
+        return self._call("patch", f"/v1/spaces/{space}/settings", body)
 
     def _process_register(self, body):
         # progress@v1 plumbing (ADR-014 §1: programs report progress
@@ -2560,6 +2987,138 @@ class _Client:
             return [self._resolve_field_refs(space, x) for x in v]
         return v
 
+    # --- object history (any docs/03-api.md § Version history) ----------------
+    # Read-only and per object. A version is a ChangeId, the id every
+    # write returns as `changeId`. The history holds the synced values
+    # only, and no chat messages. `objects` is the dataset of the
+    # object's own row (its name and properties); `editor_blocks` is
+    # its body.
+    @staticmethod
+    def _qs(**params):
+        """`?a=1&b=2` from the set parameters (None / "" / False drop)."""
+        parts = []
+        for k, v in params.items():
+            if v is None or v == "" or v is False:
+                continue
+            if isinstance(v, (list, tuple)):
+                v = ",".join(str(x) for x in v)
+            parts.append(f"{k}={_urlquote('true' if v is True else v)}")
+        return ("?" + "&".join(parts)) if parts else ""
+
+    def _hist_dataset(self, space, object_id, dataset):
+        if dataset is None or dataset in ("objects", "editor_blocks"):
+            return dataset
+        return self._collection(space, object_id, dataset)
+
+    def _hist_rows(self, space, dataset, recs):
+        """History rows without the version noise; a row of `objects`
+        reads like a query_objects row."""
+        out = []
+        for r in recs or []:
+            if not isinstance(r, dict):
+                out.append(r)
+                continue
+            r = {k: v for k, v in r.items() if k not in ("_ver", "_addSeq", "_applySeq")}
+            out.append(self._normalize_record(space, r) if dataset == "objects" else r)
+        return out
+
+    @_public('getter', label="Reading the history of {object} in {space}")
+    def list_changes(self, space, object_id, limit=20, cursor=None, author=None,
+                     dataset=None, record_id=None, grouped=False):
+        """An object's changes, newest first → {"changes": [...], "cursor"}.
+
+        Each change: {version, author, timestamp, dataset, touched:
+        [{dataset, recordId, ops}], groupSize}. `version` names the
+        state right after the change (get_version, diff_versions);
+        `author` is an account id (get_identity names it); `timestamp`
+        is the author's clock in Unix seconds, for display only.
+        Dataset `objects` = the name and properties, `editor_blocks` =
+        the body, else a store key. Filters: `author`, `dataset`,
+        `record_id` (needs dataset). `grouped=True` folds one author's
+        consecutive changes into one entry (`groupSize` > 1). `limit`
+        is capped at 200; pass the returned `cursor` for the next
+        page, None = no more. Chat messages have no history."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history"
+                       + self._qs(limit=limit, cursor=cursor, author=author,
+                                  dataset=ds, recordId=record_id, coalesce=grouped))
+        return {"changes": r.get("changes") or [], "cursor": r.get("cursor") or None}
+
+    @_public('getter', label="Reading an old version of {object} in {space}")
+    def get_version(self, space, object_id, version, dataset=None):
+        """The object as it was at `version` → {"version", "datasets": [{dataset, records}]}.
+
+        `version` comes from list_changes. `objects` holds one row,
+        shaped like a query_objects row (name, properties);
+        `editor_blocks` holds the body as blocks, in `nav.pos` order
+        (`text`, `type`). `dataset` narrows to one. Only synced values
+        have a history. To restore an old state, read it here and
+        write it back with the normal calls: there is no revert call.
+        A view that is too large raises 413 history.view_too_large:
+        pass `dataset`, or use get_record_version."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history/"
+                       f"{version}" + self._qs(dataset=ds))
+        return {"version": r.get("version"),
+                "datasets": [{"dataset": d.get("dataset"),
+                              "records": self._hist_rows(space, d.get("dataset"),
+                                                         d.get("records"))}
+                             for d in r.get("datasets") or []]}
+
+    @_public('getter', label="Reading an old record of {object} in {space}")
+    def get_record_version(self, space, object_id, version, dataset, record_id):
+        """One record at `version` → {version, dataset, recordId, exists, deleted?, record?}.
+
+        The cheap read for one block or one store record: no whole
+        view is built. `exists: False` = the record was not there
+        yet; `deleted: True` = it was deleted by then."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history/"
+                       f"{version}/datasets/{ds}/records/{_urlquote(record_id)}")
+        if isinstance(r.get("record"), dict):
+            r["record"] = self._hist_rows(space, ds, [r["record"]])[0]
+        return r
+
+    @_public('getter', label="Comparing versions of {object} in {space}")
+    def diff_versions(self, space, object_id, version, base=None, dataset=None,
+                      record_ids=None):
+        """What changed → {"base", "version", "datasets": [{dataset, records}]}.
+
+        Without `base`: what the one change `version` did. With
+        `base`: everything between the two versions. Each record:
+        {id, kind: added / removed / changed / deleted, fields:
+        [{path, before?, after?}]}. In `objects` a path reads
+        [owner, property] with the keys writes take (["any", "name"],
+        ["task", "status"]); in `editor_blocks` it is a block field
+        (["text"]). `dataset` and `record_ids` (needs dataset) narrow
+        it."""
+        ds = self._hist_dataset(space, object_id, dataset)
+        r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/history/diff"
+                       + self._qs(version=version, base=base, dataset=ds,
+                                  recordIds=record_ids))
+        for d in r.get("datasets") or []:
+            if d.get("dataset") != "objects":
+                continue
+            for rec in d.get("records") or []:
+                for fld in rec.get("fields") or []:
+                    fld["path"] = self._hist_path(space, fld.get("path"))
+        return r
+
+    def _hist_path(self, space, path):
+        """[ownerId, propId, …] of an `objects` diff → [ownerXKey, handle, …]."""
+        if not (isinstance(path, list) and path and isinstance(path[0], str)):
+            return path
+        row = self._catalog(space)["by_id"].get(path[0])
+        if not self._is_user_def(row):
+            return path
+        out = [row.get("xKey") or path[0], *path[1:]]
+        if len(path) > 1:
+            for p in self._type_props(space, path[0]):
+                if p.get("id") == path[1]:
+                    out[1] = p.get("handle") or path[1]
+                    break
+        return out
+
     # --- editor markdown (content, NOT markdown — wire landmine) --------------
     # The routes name the collection: the body `editor_blocks` an
     # object holds while its ONE type declares an editor part
@@ -2651,9 +3210,66 @@ class _Client:
                        {"content": content})
         return self._warned(r, self._link_warnings(content))
 
+
+    # --- editor blocks: the body, one block at a time (parity §C10) ----------
+    def _blocks_path(self, space, object_id, block_id=None):
+        return (f"/v1/spaces/{space}/objects/{object_id}/editor/editor_blocks/blocks"
+                + (f"/{_urlquote(block_id)}" if block_id else ""))
+
+    @_public('mutator', label="Adding a block to {object} in {space}")
+    def create_block(self, space, object_id, block):
+        """Add ONE block to an object's body → {versionId, changeId, recordIds}.
+
+        `recordIds[0]` is the new block id. `block`: {"type", "text"?,
+        "style"?, "nav"?}. `type`: paragraph, heading, list_item,
+        check_list_item, code, quote, divider, table, image.
+        `text` is INLINE markdown only (bold, links); the block
+        syntax lives in `type` + `style`: {"level": 1..6} heading,
+        {"ordered": True} list_item, {"checked": bool}
+        check_list_item, {"lang": "go"} code. `nav`: {"parentId":
+        <block id>} nests it, {"pos": <lexid>} places it; default =
+        top level, at the end. Read blocks with query(space,
+        object_id, "editor_blocks", sort=["nav.pos", "id"]). For
+        ordinary writing, the markdown calls are simpler; blocks are
+        for an exact structural edit."""
+        self._check_body(space, object_id)
+        r = self._call("post", self._blocks_path(space, object_id), block)
+        text = block.get("text") if isinstance(block, dict) else None
+        return self._warned(r, self._link_warnings(text))
+
+    @_public('mutator', label="Editing a block of {object} in {space}")
+    def patch_block(self, space, object_id, block_id, set=None, unset=None):
+        """Change fields of one block → {versionId, changeId, recordIds}.
+
+        `set`: {path: value} with DOTTED paths, each one field:
+        {"text": "new", "style.checked": True, "nav.pos": "…"}
+        ("style": {…} replaces the whole style). `unset`: [path].
+        Writable: type, text, style[.key], nav[.parentId|.pos]; type
+        and nav cannot be unset. Tick one checkbox, retype a block,
+        or move it under another parent without touching the rest of
+        the body. 404 blocks.not_found."""
+        body = {}
+        if set:
+            body["set"] = dict(set)
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("patch_block needs `set` and/or `unset`")
+        r = self._call("patch", self._blocks_path(space, object_id, block_id), body)
+        return self._warned(r, self._link_warnings((set or {}).get("text")))
+
+    @_public('mutator', label="Deleting a block of {object} in {space}")
+    def delete_block(self, space, object_id, block_id):
+        """Delete one block → {versionId, changeId, recordIds}.
+
+        Its child blocks are NOT deleted with it: delete them too
+        (query editor_blocks for `nav.parentId` == the block), or they
+        stay without a parent. The object history keeps the block."""
+        return self._call("delete", self._blocks_path(space, object_id, block_id))
+
     # --- spaces & ui context ---------------------------------------------------
     @_public('getter', scoped=False, label="Reading the list of spaces")
-    def list_spaces(self, raw=False):
+    def list_spaces(self, raw=False, status=None):
         """Every space on the account → trimmed space rows.
 
         Rows: `{id, name, description?, status, ownRole, spaceType, createdAt}`
@@ -2661,7 +3277,15 @@ class _Client:
 
         Sync internals (push key material, settings, index pointers) are
         TRIMMED — `raw=True` returns the wire rows. Operate on
-        `status == "active"` unless asked otherwise."""
+        `status == "active"` unless asked otherwise. Without `status`
+        only the active spaces list. `status="all"` lists every row;
+        one value lists that status: "invite_pending" (another account
+        added the user: answer_space_invite), "one_to_one_pending" (a
+        direct chat request: answer_direct_space), "joining" (the
+        user's own request waits: cancel_join), "deleted"."""
+        if status:
+            rows = self._call("get", "/v1/spaces" + self._qs(status=status)).get("spaces", [])
+            return rows if raw else [_trim_space_row(r) for r in rows]
         rows = self._call("get", "/v1/spaces").get("spaces", [])
         self._spaces_cache = rows       # doubles as the name catalog (§8)
         return rows if raw else [_trim_space_row(r) for r in rows]
@@ -2737,6 +3361,86 @@ class _Client:
         row["generalChatId"] = self.general_chat(row["id"])
         return row
 
+    @_public('getter', scoped=False, label="Reading the list of spaces")
+    def query_spaces(self, **opts):
+        """The account's RAW space rows, filtered and sorted → rows; every status included.
+
+        `opts`: filter / sort / limit / offset over the row fields:
+        {id, name, spaceType, localStatus, remoteStatus, ownRole,
+        createdAt}. For a filter or a sort that list_spaces cannot
+        do: direct chats alone are filter={"spaceType":
+        "any.onetoone"}. The rows carry the stored status pair, not
+        the `status` of list_spaces: for pending rows use
+        list_spaces(status=…). The key material of a row is
+        trimmed."""
+        body = {k: v for k, v in opts.items() if v is not None}
+        recs = self._call("post", "/v1/spaces/query", body).get("records", [])
+        return [{k: v for k, v in r.items()
+                 if k not in ("push", "_ver", "_addSeq", "_applySeq", "settings")}
+                for r in recs if isinstance(r, dict)]
+
+    @_public('mutator', label="Changing the space {space}")
+    def patch_space(self, space, name=None, description=None, icon_cid=None):
+        """Rename a space, or change its description or icon; returns {} (wire: 204).
+
+        EVERY member sees the change: ask the user first in a shared
+        space. `description=""` clears it. The owner or a writer
+        can; a reader gets 403. get_space shows the change a moment
+        later, not at once. The user's private settings of a space
+        are set_space_settings."""
+        body = {k: v for k, v in (("name", name), ("description", description),
+                                  ("iconCid", icon_cid)) if v is not None}
+        if not body:
+            raise ValueError("patch_space needs name, description or icon_cid")
+        r = self._call("patch", f"/v1/spaces/{space}", body)
+        self._spaces_cache = None    # the name catalog moved
+        return r
+
+    # A direct (1-1) space: two accounts, derived from both identities,
+    # no invite. "Accept" and "decline" gate what THIS device loads.
+    @_public('mutator', scoped=False, label="Opening a direct chat")
+    def open_direct_space(self, identity):
+        """Open the direct (1-1) space with another account → its space row; ask the user first.
+
+        `identity` is the other account's id (find_identities, a
+        members row). The other person gets a request to accept.
+        Idempotent: the same two accounts always give the same space;
+        it also takes back an earlier decline. 400
+        request.invalid_field for an id that does not decode, or for
+        your own."""
+        r = self._call("post", "/v1/spaces/one-to-one", {"otherIdentity": identity})
+        self._spaces_cache = None
+        return _trim_space_row(r)
+
+    @_public('mutator', scoped=False, listed=False)
+    def register_incoming_direct(self, identity, display_hint=None):
+        """Record a direct-chat request learned out of band → {} (wire: 204).
+
+        Unlisted: the server's inbox does this by itself. A pending
+        row appears (list_spaces(status="one_to_one_pending")),
+        nothing is loaded. `display_hint`:
+        {name?, description?, iconCid?} for the UI."""
+        body = {"peerIdentity": identity}
+        if display_hint:
+            body["displayHint"] = dict(display_hint)
+        return self._call("post", "/v1/spaces/one-to-one/register-incoming", body)
+
+    @_public('mutator', scoped=False, label="Answering a direct chat request")
+    def answer_direct_space(self, space_id, accept):
+        """Accept or decline a pending direct (1-1) space; ask the user first.
+
+        `space_id` is the id of a row from
+        list_spaces(status="one_to_one_pending"). `accept=True` loads the
+        space on this device → its space row. `accept=False`
+        declines on every device of the account → {}; the request
+        does not come back, and only open_direct_space reverses
+        it."""
+        if accept:
+            r = self._call("post", f"/v1/spaces/{space_id}/one-to-one/accept")
+            self._spaces_cache = None
+            return _trim_space_row(r)
+        return self._call("post", f"/v1/spaces/{space_id}/one-to-one/decline")
+
     @_public('mutator')
     def open_in_ui(self, space, object_id=None):
         # device scope: user decision 2026-08-19
@@ -2789,6 +3493,26 @@ class _Client:
         return [c for c in self._list_collections_raw(space)
                 if c.get("id") not in _SYNTHETIC_TYPES
                 and c.get("id") not in _BUILTIN_COLLECTION_IDS]
+
+    @_public('getter', label="Reading the type {type_key} in {space}")
+    def get_type(self, space, type_key):
+        """One type, read fresh → {id, xKey, name, description?, icon?, layout?, hidden?, builtIn?}.
+
+        `type_key` is the xKey or the id. The cheap read
+        when one type matters and its row may have changed in this
+        run (a rename, a new icon); `list_properties` reads its
+        properties."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._call("get", f"/v1/spaces/{space}/types/{tid}")
+
+    @_public('getter', label="Reading the collection {collection_key} in {space}")
+    def get_collection(self, space, collection_key):
+        """One collection, read fresh → {id, xKey, name, description?, icon?, meta?, hidden?}.
+
+        `collection_key` is the xKey or the id; the built-ins
+        `miniapp` and `bin` resolve too."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
+        return self._call("get", f"/v1/spaces/{space}/collections/{cid}")
 
     @_public('getter', label="Reading the properties of {type_key} in {space}")
     def list_properties(self, space, type_key):
@@ -2904,8 +3628,8 @@ class _Client:
         """Create a type — what an object IS — with its icon and properties (composite ensure).
 
         body: {"name", "icon", "xKey"?, "description"?, "hidden"?,
-        "layout"?, "body"?: false, "properties"?: [{"name", "xKey"?,
-        "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
+        "layout"?, "meta"?, "body"?: false, "properties"?: [{"name",
+        "xKey"?, "kind"?, "xFormat"?}]}. **`icon` is REQUIRED on a listed
         type** — the glyph the user sees on every object of it and in
         every picker; a mint without one ERRORS. `{"glyph": "<Lucide
         icon name>"}` — a Lucide glyph, never an emoji (the client's
@@ -2921,7 +3645,11 @@ class _Client:
         "Done"]}} (see add_property for the slug table); with a slug
         the kind may be omitted. xKeys default to a slug of the name.
         Idempotent: an existing USER type (by xKey) is reused, only
-        MISSING properties are added. **Every type has a body**: the
+        MISSING properties are added. It NEVER reshapes what exists:
+        a draft that differs from the type (its name, a property's
+        name, slug or kind) changes nothing and is named in
+        `unchangedFields` / `unchangedProps` — patch_type takes the
+        same body and applies it. **Every type has a body**: the
         editor body part is declared on a new type and healed onto
         an existing one that lacks it, so a user type is "page plus
         fields" — its objects hold markdown like a page does;
@@ -2961,7 +3689,7 @@ class _Client:
                     f'a type needs an "icon" — the glyph the user sees on every '
                     f'"{body.get("name")}" object and in every picker. Pass '
                     f'"icon": {_TYPE_ICON_SHAPE} and call create_type again.')
-            req = {k: body[k] for k in ("name", "description", "hidden", "layout")
+            req = {k: body[k] for k in ("name", "description", "hidden", "layout", "meta")
                    if k in body}
             req["xKey"] = xkey
             if icon is not None:
@@ -2972,6 +3700,7 @@ class _Client:
             # heal an icon onto a row minted before the rule; a row
             # that has one keeps it (the user's pick wins)
             self._call("patch", f"/v1/spaces/{space}/types/{tid}", {"iconCid": icon})
+        kept = {} if created else self._unchanged(space, tid, row, body, props)
         added = self._add_missing_props(space, tid, props)
         if want_body:
             self._ensure_body_part(space, tid)
@@ -2979,7 +3708,7 @@ class _Client:
         if created and not body.get("hidden"):
             self._ensure_collections_app(space)
         return {"typeId": tid, "xKey": xkey, "created": created,
-                "addedProps": added}
+                "addedProps": added, **kept}
 
     def _ensure_body_part(self, space, type_id):
         """Declare the editor body on a type that lacks it (the
@@ -3014,19 +3743,279 @@ class _Client:
         self._cat_invalidate(space)
         return {"typeId": tid, "icon": value}
 
+    def _plan_props(self, space, owner_id, owner_key, props):
+        """The `properties` drafts of patch_type / patch_collection,
+        checked and with no write: a missing property is to be added,
+        an existing one gets its changed name / description / slug,
+        one of another kind is to be moved to that kind, and NOTHING
+        is removed. → (missing drafts, [(xKey, id, sets)], [(id,
+        kind, draft)])."""
+        have = {p.get("xKey"): p for p in self._fetch_props(space, owner_id)}
+        missing, patches, moves = [], [], []
+        for p in props or []:
+            pxkey = p.get("xKey") or _slugify_xkey(p.get("name") or "")
+            cur = have.get(pxkey)
+            if cur is None:
+                missing.append(p)
+                continue
+            slug = (p.get("xFormat") or {}).get("type")
+            want = p.get("kind") or (_KIND_OF_SLUG.get(slug, "string") if slug else None)
+            if want and cur.get("kind") and want != cur["kind"]:
+                if want not in _KINDS or want == "null":
+                    raise ValueError(f'property "{pxkey}": kind must be one of '
+                                     f"{[k for k in _KINDS if k != 'null']}, got {want!r}")
+                moves.append((cur["id"], want, p))
+                continue
+            sets = {}
+            if p.get("name") and p["name"] != (cur.get("name") or pxkey):
+                sets["name"] = p["name"]
+            if "description" in p and (p["description"] or "") != (cur.get("description") or ""):
+                sets["description"] = p["description"] or ""
+            if slug and slug != (cur.get("xFormat") or {}).get("type"):
+                sets["xFormat.type"] = slug
+            if sets:
+                patches.append((pxkey, cur["id"], sets))
+        return missing, patches, moves
+
+    @_public('mutator', label="Changing the kind of {prop_key} on {type_key} in {space}")
+    def change_property_kind(self, space, type_key, prop_key, kind, xFormat=None):
+        """Give a property another kind: a NEW property takes its place and the values move.
+
+        patch_type / patch_collection do the same for a draft of
+        another kind; this is the call for one property. A kind
+        (string, number, boolean, datetime, array, object) never
+        changes in place. First check that you need this: a
+        slug moves within one kind with patch_property (text ↔ url,
+        number ↔ currency, date ↔ datetime). Else this call does the
+        whole move, in order: the old property takes the handle
+        `<xKey>_old`; a new property is added with the name, the
+        xKey and the scope of the old one, `kind`, and `xFormat`
+        (default: the plain slug of the kind); every object's value
+        is converted and written under it; the old property is
+        removed. A value with no honest reading in the new kind
+        ("soon" as a number) is NOT guessed: it is listed under
+        `failed`, and then the old property STAYS as `<xKey>_old`
+        so nothing is lost — fix those values and delete_property
+        it. `type_key` is the owner, a type or a collection. Not
+        atomic: an edit of the old property on another device
+        during the move is not copied, so do it while nobody edits
+        the type. A view or a filter saved in the UI that names the
+        old property must be set again by the user. Returns
+        {"propId", "xKey", "kind", "converted", "failed":
+        [{"objectId", "value"}], "old": "removed" | "<xKey>_old"}."""
+        if kind not in _KINDS or kind == "null":
+            raise ValueError(f"kind must be one of {[k for k in _KINDS if k != 'null']}")
+        tid = self._resolve_owner_or_raise(space, type_key)
+        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        old = next(p for p in self._fetch_props(space, tid) if p.get("id") == pid)
+        if old.get("kind") == kind:
+            raise ValueError(
+                f'"{prop_key}" is already of kind {kind}; a slug moves with '
+                'patch_property(…, set={"xFormat.type": <slug>})')
+        r = self._move_kind(space, tid, old, kind, {"xFormat": xFormat} if xFormat else {})
+        self._cat_invalidate(space)
+        return r
+
+    def _move_kind(self, space, tid, old, kind, draft):
+        """The move of one property to another kind (any website,
+        "Change a kind"): free the xKey, add the new property, copy
+        the values converted, remove the old property when every
+        value moved. `draft` may carry the new name, description and
+        xFormat."""
+        pid = old["id"]
+        xFormat = draft.get("xFormat")
+        xkey = old.get("xKey") or _slugify_xkey(old.get("name") or "")
+        taken = {p.get("xKey") for p in self._fetch_props(space, tid)}
+        temp, n = f"{xkey}_old", 1
+        while temp in taken:
+            n += 1
+            temp = f"{xkey}_old{n}"
+        path = self._props_path(space, tid)
+        # 1. free the xKey  2. the new property, under a new id
+        self._call("patch", f"{path}/{pid}", {"set": {"xKey": temp}})
+        new = {"name": draft.get("name") or old.get("name") or xkey, "xKey": xkey,
+               "kind": kind}
+        if old.get("scope"):
+            new["scope"] = old["scope"]
+        desc = draft["description"] if "description" in draft else old.get("description")
+        if desc:
+            new["description"] = desc
+        if xFormat:
+            new["xFormat"] = dict(xFormat)
+        new_pid = self._post_property(space, tid, new)["propId"]
+        # 3. copy the values, object by object
+        member = ("any.collections" if self._def_kind(space, tid) == "collection"
+                  else "any.type")
+        converted, failed, offset, page = 0, [], 0, 200
+        while True:
+            recs = self._call("post", f"/v1/spaces/{space}/objects/query",
+                              {"filter": {member: tid}, "limit": page,
+                               "offset": offset}).get("records", [])
+            for r in recs:
+                v = (r.get(tid) or {}).get(pid)
+                if v is None:
+                    continue
+                nv = _convert_value(v, kind)
+                if nv is _NO_VALUE:
+                    failed.append({"objectId": r.get("id"), "value": v})
+                    continue
+                self._call("post", f"/v1/spaces/{space}/properties/{r['id']}/set/{tid}",
+                           {"patch": {new_pid: nv}})
+                converted += 1
+            if len(recs) < page:
+                break
+            offset += page
+        # 5. remove the old property — only when every value moved
+        if not failed:
+            self._call("delete", f"{path}/{pid}")
+        self._props_cache.pop((space, tid), None)
+        return {"propId": new_pid, "xKey": xkey, "kind": kind, "converted": converted,
+                "failed": failed, "old": "removed" if not failed else temp}
+
+    def _unchanged(self, space, did, row, body, props):
+        """What a create_* call on an EXISTING definition left as it
+        is, although the draft says otherwise → the extra result keys.
+        A create never reshapes; patch_type / patch_collection do."""
+        out = {}
+        fields = [k for k in ("name", "description", "hidden", "layout", "meta")
+                  if k in body and body[k] != row.get(k)
+                  and not (body[k] in (None, "", False) and row.get(k) in (None, "", False))]
+        if fields:
+            out["unchangedFields"] = fields
+        if not props:
+            return out   # no drafts → nothing to compare, no read
+        try:
+            _, patches, moves = self._plan_props(space, did, row.get("xKey") or did, props)
+        except ValueError:
+            patches, moves = [], []
+        by_id = {p.get("id"): p.get("xKey") for p in self._fetch_props(space, did)}
+        keys = [x for x, _, _ in patches] + [by_id.get(pid) for pid, _, _ in moves]
+        if keys:
+            out["unchangedProps"] = keys
+        return out
+
+    _PATCH_KEYS = {"types": ("name", "description", "hidden", "icon", "layout", "meta",
+                             "properties"),
+                   "collections": ("name", "description", "hidden", "icon", "meta",
+                                   "properties")}
+
+    def _patch_def(self, space, route, did, owner_key, body):
+        """The shared body of patch_type / patch_collection: the
+        definition's own fields in one PATCH, then the property
+        drafts. Everything is checked before the first write."""
+        fn = "patch_type" if route == "types" else "patch_collection"
+        body = dict(body or {})
+        unknown = sorted(set(body) - set(self._PATCH_KEYS[route]))
+        if unknown:
+            raise ValueError(f"{fn}: unknown key(s) {unknown}; the body takes "
+                             f"{list(self._PATCH_KEYS[route])}")
+        props = body.pop("properties", None)
+        row = self._catalog(space)["by_id"].get(did) or {}
+        wire = {}
+        for k in ("name", "description", "hidden", "meta"):
+            if body.get(k) is not None:
+                wire[k] = body[k]
+        if "layout" in body:
+            wire["layout"] = body["layout"]          # None clears it
+        if "icon" in body:
+            what = "type" if route == "types" else "collection"
+            if not self._is_user_def(row) or row.get("xKey") in self._catalog_handles():
+                raise ValueError(
+                    f'"{owner_key}" is a builtin or catalog {what} — its icon is the '
+                    f"client's; only a user {what}'s icon can be set.")
+            wire["iconCid"] = _format_type_icon(body["icon"], what)
+        if not wire and not props:
+            raise ValueError(f"{fn}: nothing to change — the body takes "
+                             f"{list(self._PATCH_KEYS[route])}")
+        missing, patches, moves = (self._plan_props(space, did, owner_key, props)
+                                   if props else ([], [], []))
+        if wire:
+            self._call("patch", f"/v1/spaces/{space}/{route}/{did}", wire)
+        for _, pid, sets in patches:
+            self._call("patch", f"{self._props_path(space, did)}/{pid}", {"set": sets})
+        added = self._add_missing_props(space, did, missing)
+        changes = []
+        if moves:
+            have = {p.get("id"): p for p in self._fetch_props(space, did)}
+            changes = [self._move_kind(space, did, have[pid], kind, draft)
+                       for pid, kind, draft in moves]
+        self._cat_invalidate(space)
+        return {("typeId" if route == "types" else "collectionId"): did,
+                "xKey": row.get("xKey") or did,
+                "changed": ["icon" if k == "iconCid" else k for k in wire],
+                "addedProps": added, "patchedProps": [x for x, _, _ in patches],
+                "kindChanges": changes}
+
+    @_public('mutator', label="Changing the type {type_key} in {space}")
+    def patch_type(self, space, type_key, body):
+        """Change an EXISTING type: its name, description, icon, layout and properties.
+
+        The body of create_type, for a type that exists: {"name"?,
+        "description"?, "hidden"?, "icon"?, "layout"?, "meta"?,
+        "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?,
+        "description"?}]}; only the keys you pass change. `type_key`
+        is the xKey (or id); the xKey never changes, so writes and
+        filters keep working. `description: ""` clears it; `layout:
+        None` clears the layout; `icon` is {"glyph": "<Lucide
+        name>"} (a builtin or catalog type refuses); `hidden: True`
+        takes the type out of the picker, its objects stay.
+        `properties` are matched by xKey: a missing one is ADDED, an
+        existing one gets its changed name, description and slug
+        (`xFormat.type`, within its kind), and one whose draft has
+        ANOTHER KIND moves to that kind — a new property takes the
+        xKey, every object's value is converted and copied, the old
+        one is removed (change_property_kind; a value that does not
+        convert is listed under `failed`, and the old property then
+        stays as `<xKey>_old`). Nothing is ever removed: a property
+        that the list leaves out stays (delete_property). Every key
+        and draft is checked before the first write. Options of a
+        choice: set_option. Returns {"typeId", "xKey", "changed":
+        [keys], "addedProps": {xKey: id}, "patchedProps": [xKey],
+        "kindChanges": [change_property_kind results]}; read each
+        `failed` list and tell the user what did not move.
+        create_type is the other half: it makes a type or adds what
+        is missing, and never reshapes."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        return self._patch_def(space, "types", tid, type_key, body)
+
+    @_public('mutator', label="Changing the collection {collection_key} in {space}")
+    def patch_collection(self, space, collection_key, body):
+        """Change an EXISTING collection: its name, description, meta and properties.
+
+        The body of create_collection, for a collection that exists:
+        {"name"?, "description"?, "hidden"?, "icon"?, "meta"?,
+        "properties"?}; only the keys you pass change. `icon` is
+        {"glyph": "<Lucide name>"}, never an emoji. `collection_key` is the xKey
+        (or id); the xKey never changes. `description: ""` clears
+        it; `meta` is patched key by key; `hidden: True` takes it
+        out of the tag pickers, the members stay filed. `properties`
+        as in patch_type: missing ones are added, existing ones get
+        their changed name, description and slug, another kind
+        moves the property to that kind, nothing is removed. A
+        built-in collection refuses (400 collection.registered).
+        Returns {"collectionId", "xKey", "changed", "addedProps",
+        "patchedProps", "kindChanges"}."""
+        cid = self._resolve_collection_or_raise(space, collection_key)
+        return self._patch_def(space, "collections", cid, collection_key, body)
+
     @_public('mutator')
     def create_collection(self, space, body):
         """Create a collection — a tag, what objects are FILED UNDER — with properties.
 
-        body: {"name", "xKey"?, "description"?, "hidden"?,
-        "properties"?: [{"name", "xKey"?, "kind"?, "xFormat"?}]} (the
-        property drafts of create_type). An empty collection is a
+        body: {"name", "xKey"?, "description"?, "hidden"?, "icon"?,
+        "meta"?, "properties"?: [{"name", "xKey"?, "kind"?,
+        "xFormat"?}]} (the property drafts of create_type). `icon` is
+        optional: {"glyph": "<Lucide icon name>"}, a glyph and never
+        an emoji, as for a type; on an existing collection it is set
+        only when the collection has none. An empty collection is a
         plain tag; with properties it is a supertag: its members carry
         those columns under the collection's group (`{"reading_list":
         {"order": 1}}` in create_object / update_object) and lose them
         from view when unfiled (values stay). No layout, no body, no
         datasets — a collection has no behaviour; what an object IS is
-        its type. Idempotent by xKey; the same handle rules as
+        its type. Idempotent by xKey, and it never reshapes what
+        exists (a differing draft is named in `unchangedFields` /
+        `unchangedProps`; patch_collection applies it); the same handle rules as
         create_type (one namespace with types, builtins, the catalog's
         `wiki` / `contact` / …, record-root keys). Returns
         {"collectionId", "xKey", "created", "addedProps"}. File objects
@@ -3035,13 +4024,23 @@ class _Client:
         body = dict(body or {})
         props = body.pop("properties", None) or []
         xkey = body.get("xKey") or _slugify_xkey(body.get("name") or "")
+        if "iconCid" in body:
+            raise ValueError('a collection takes "icon": ' + _TYPE_ICON_SHAPE
+                             + ' — there is no "iconCid" key')
+        icon = _format_type_icon(body["icon"], "collection") if body.get("icon") else None
         row = self._definition_guards(space, xkey, "collection")
         cid = row["id"] if row else None
         created = False
+        if cid is not None and icon is not None and not row.get("iconCid"):
+            # as create_type: an icon is healed onto a row that has
+            # none; a row that has one keeps it (the user's pick wins)
+            self._call("patch", f"/v1/spaces/{space}/collections/{cid}", {"iconCid": icon})
         if cid is None:
-            req = {k: body[k] for k in ("name", "description", "iconCid", "hidden")
+            req = {k: body[k] for k in ("name", "description", "hidden", "meta")
                    if k in body}
             req["xKey"] = xkey
+            if icon is not None:
+                req["iconCid"] = icon
             cid = self._call("post", f"/v1/spaces/{space}/collections", req)["collectionId"]
             created = True
             # the property route needs the owner's KIND before any
@@ -3052,10 +4051,11 @@ class _Client:
             cat["by_id"][cid] = row
             cat["by_xkey"].setdefault(xkey, cid)
             cat["crows"].append(row)
+        kept = {} if created else self._unchanged(space, cid, row, body, props)
         added = self._add_missing_props(space, cid, props)
         self._cat_invalidate(space)
         return {"collectionId": cid, "xKey": xkey, "created": created,
-                "addedProps": added}
+                "addedProps": added, **kept}
 
     def _row_root_keys(self, space):
         """The keys a record carries at its root beside the type groups:
@@ -3237,6 +4237,92 @@ class _Client:
         return self._call(
             "delete",
             f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}")
+
+    def patch_dataset_field(self, space, type_key, dataset_def_id, field_def_id,
+                            set=None, unset=None):
+        tid = self._resolve_type_or_raise(space, type_key)
+        body = {}
+        if set:
+            body["set"] = dict(set)
+        if unset:
+            body["unset"] = list(unset)
+        if not body:
+            raise ValueError("patch_dataset_field needs `set` and/or `unset`")
+        r = self._call(
+            "patch",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/fields/{field_def_id}",
+            body)
+        self._ds_invalidate(space, type_id=tid)
+        return r
+
+    def add_dataset_index(self, space, type_key, dataset_def_id, index):
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call(
+            "post",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/indexes", index)
+        self._ds_invalidate(space, type_id=tid)
+        return {"indexDefId": r.get("indexDefId")}
+
+    def remove_dataset_index(self, space, type_key, dataset_def_id, index_def_id):
+        tid = self._resolve_type_or_raise(space, type_key)
+        r = self._call(
+            "delete",
+            f"/v1/spaces/{space}/types/{tid}/datasets/{dataset_def_id}/indexes/{index_def_id}")
+        self._ds_invalidate(space, type_id=tid)
+        return r
+
+    # --- a shared dataset, read across its objects (parity §C10) --------------
+    def _shared_collection(self, space, type_key, dataset):
+        """The storage collection of a type's SHARED dataset, by store key."""
+        tid = self._resolve_type_or_raise(space, type_key)
+        rows = self._datasets_of(space, tid)
+        for d in rows:
+            if dataset in (d.get("key"), d.get("collection")) and d.get("collection"):
+                if not d.get("shared"):
+                    raise ValueError(
+                        f'dataset "{dataset}" of type "{type_key}" is not shared: '
+                        "its records are read one object at a time, with "
+                        "query(space, object_id, dataset). A dataset is shared "
+                        'only when its declaration says "shared": true.')
+                return d["collection"]
+        keys = sorted(d.get("key") for d in rows if d.get("key"))
+        raise ValueError(f'type "{type_key}" declares no dataset "{dataset}" — '
+                         f"its datasets: {keys or 'none'}")
+
+    @_public('getter', label="Reading {dataset} records across {space}")
+    def query_dataset(self, space, type_key, dataset, **opts):
+        """The records of a SHARED dataset across every object of its type → records.
+
+        One read where query() needs one call for each object.
+        `type_key` is the type that declares the store, `dataset` the
+        store key. `opts`: filter / sort / limit / offset /
+        projection, with the dataset's plain field keys. Each record
+        has `id` = "<objectId>/<recordId>" and `_objectId`. Records of
+        different objects share no version order: sort on a declared
+        field. Time fields are instants (see query). Only a dataset
+        declared `shared` reads this way (list_datasets shows it);
+        the read covers what this device has synced."""
+        coll = self._shared_collection(space, type_key, dataset)
+        _guard_filter(opts.get("filter"),
+                      _STAMP_KEYS | self._dataset_time_keys.get(
+                          self._collection_key(coll), set()))
+        body = {"dataset": coll}
+        body.update({k: v for k, v in opts.items() if v is not None})
+        return self._call("post", f"/v1/spaces/{space}/datasets/query",
+                          body).get("records", [])
+
+    @_public('getter', label="Aggregating {dataset} records across {space}")
+    def aggregate_dataset(self, space, type_key, dataset, pipeline):
+        """A pipeline over a SHARED dataset across every object of its type → {"records": [...]}.
+
+        The stages of aggregate(), with the dataset's plain field
+        keys ("$start"); `_objectId` groups by object. Count the
+        events of every calendar in one call: [{"$group": {"_id":
+        "$_objectId", "n": {"$count": {}}}}]. Shared datasets only
+        (see query_dataset)."""
+        coll = self._shared_collection(space, type_key, dataset)
+        return self._call("post", f"/v1/spaces/{space}/datasets/aggregate",
+                          {"dataset": coll, "pipeline": pipeline})
 
     @_public('mutator', label="Adding the property “{body.name}” to {type_key} in {space}")
     def add_property(self, space, type_key, body):
@@ -3611,6 +4697,21 @@ class _Client:
         r = self._call("get", f"/v1/spaces/{space}/bundles")
         return r.get("bundles") or []
 
+    @_public('mutator', listed=False)
+    def uninstall_bundle(self, space, bundle_id):
+        """Uninstall a bundle: delete its root(s) and what they hold; returns {} (wire: 204).
+
+        Unlisted, and NOT how an app is removed for a user: that is
+        remove_app (the UI hides the app and keeps its content). This
+        deletes the install: every losing root, then the winner,
+        with the records on them. No undo; a later install starts
+        empty. Idempotent. A derived bundle (the general chat, bao's
+        own) cannot be uninstalled. 409 bundle.not_ready while the
+        registry has not synced."""
+        r = self._call("delete", self._bundle_path(space, bundle_id))
+        self._cat_invalidate(space)
+        return r
+
     @_public('getter', listed=False)
     def get_bundle(self, space, bundle_id):
         """One bundles registry row → {id, name, rootId, roots, losers?, derived, synced}.
@@ -3969,6 +5070,65 @@ class _Client:
                 "itself — just answer. chat_send is for other chats (only progress "
                 "bubbles, agent.done=false, go here)")
         return self._post_message(space, chat_id, body)
+
+    # The agent runs as the user's account: "own" below is every message
+    # of that account, the ones the user typed included, and a reaction
+    # or a read mark is the user's own.
+    def _msg_path(self, space, chat_id, message_id, tail=""):
+        return (f"/v1/spaces/{space}/objects/{chat_id}/chat/messages/"
+                f"{_urlquote(message_id)}{tail}")
+
+    @_public('mutator', label="Editing a message in {space}")
+    def chat_edit(self, space, chat_id, message_id, text):
+        """Replace the text of a message this account sent → {versionId, changeId, recordIds}.
+
+        `message_id` is the `id` of a `chat_messages` record. Own
+        messages only (403 chat.not_author; 404 chat.not_found): the
+        ones you posted and the ones the user typed. Edit a message
+        the user typed only when they ask. The text is required, at
+        most 32 KiB; link warnings as in chat_send."""
+        r = self._call("patch", self._msg_path(space, chat_id, message_id),
+                       {"text": text})
+        return self._warned(r, self._link_warnings(text))
+
+    @_public('mutator', label="Deleting a message in {space}")
+    def chat_delete(self, space, chat_id, message_id):
+        """Delete a message this account sent → {versionId, changeId, recordIds}; no undo.
+
+        Own messages only (403 chat.not_author). The message goes for
+        every member. Delete a message the user typed only when they
+        ask for exactly that."""
+        return self._call("delete", self._msg_path(space, chat_id, message_id))
+
+    @_public('mutator', label="Reacting to a message in {space}")
+    def chat_react(self, space, chat_id, message_id, emoji):
+        """Toggle a reaction on a message → {versionId, changeId, recordIds}.
+
+        A second call with the same emoji removes it. The reaction
+        shows as the USER's own (the agent has no identity of its
+        own), on any member's message. `emoji` is one emoji, at most
+        64 bytes (400 chat.emoji_invalid). Read the result on the
+        message's `reactions`."""
+        return self._call("post", self._msg_path(space, chat_id, message_id,
+                                                 "/reactions/" + _urlquote(emoji)))
+
+    @_public('mutator', label="Marking messages read in {space}")
+    def chat_mark_read(self, space, chat_id, message_id=None, reactions=False):
+        """Mark chat messages read FOR THE USER; returns {} (wire: 204).
+
+        No `message_id`: the whole chat. With one: that message and
+        every message before it; `reactions=True` clears the unread
+        reactions on that one message instead. Forward only: nothing
+        marks a message unread again. The user's unread badges drop
+        on every device, so do it when the user asks or when you have
+        told them what the messages say."""
+        if message_id is None:
+            if reactions:
+                raise ValueError("reactions=True needs the message_id whose "
+                                 "reactions are read")
+            return self._call("post", f"/v1/spaces/{space}/objects/{chat_id}/chat/read-all")
+        return self._call("post", self._msg_path(
+            space, chat_id, message_id, "/reactions-read" if reactions else "/read"))
 
     def _post_message(self, space, chat_id, body):
         r = self._call("post",
@@ -4823,6 +5983,82 @@ class _Client:
         q = f"?objectId={object_id}" if object_id else ""
         return self._call("get", f"/v1/spaces/{space}/files{q}").get("files", [])
 
+    @_public('getter', label="Reading the file rows of {object} in {space}")
+    def query_files(self, space, object_id, **opts):
+        """One object's file rows, filtered and sorted → [{id, rootCid, size, objectId}].
+
+        The windowed read for an object with MANY files: `opts` are
+        filter / sort / limit / offset over the row fields (`size`,
+        `id`). The rows carry no name and no mime: list_files has
+        those. An object with no file yet reads as []."""
+        body = {k: v for k, v in opts.items() if v is not None}
+        try:
+            r = self._call("post", f"/v1/spaces/{space}/objects/{object_id}/files/query",
+                           body)
+        except AnyError as e:
+            if e.status == 404 and e.code == "file.not_found":
+                return []
+            raise
+        return r.get("records", [])
+
+    @_public('getter')
+    def file_stats(self, space):
+        """How many files of the space are backed up → {total, durable, inflight, limited}.
+
+        `durable` = safe on the network; `inflight` = the upload
+        still runs; `limited` = the upload waits because the
+        account's storage is full (see account_limits)."""
+        return self._call("get", f"/v1/spaces/{space}/files/stats")
+
+    @_public('getter', scoped=False)
+    def file_info(self, link, file=None):
+        """One file's facts and backup state, no bytes → FileInfo + `uri` + `state`.
+
+        {fileId, objectId, name?, mime?, size, durable, cached,
+        state, attempts?, lastErr?}. `state`: durable / inflight /
+        limited (see file_stats); `cached` = the bytes are on this
+        device. Forms as file_content: `file_info(link)` or
+        `file_info(spaceConfig, fileId)`. Check it before you tell
+        the user that an upload is safe, or when a download answers
+        409 file.not_available."""
+        space, file_id, _ = self._file_target("file_info", link, file)
+        info = dict(self._call("get", f"/v1/spaces/{space}/files/{file_id}"))
+        st = self._call("get", f"/v1/spaces/{space}/files/{file_id}/status")
+        info.update({k: st[k] for k in ("state", "cached", "attempts", "lastErr")
+                     if k in st})
+        info["uri"] = f"any://f/{space}/{info.get('fileId') or file_id}"
+        return info
+
+    def _file_op(self, fn, op, link, file):
+        space, file_id, _ = self._file_target(fn, link, file)
+        return self._call("post", f"/v1/spaces/{space}/files/{file_id}/{op}")
+
+    @_public('mutator', scoped=False)
+    def pin_file(self, link, file=None):
+        """Fetch a file's bytes to this device in the background; returns {} (wire: 204).
+
+        For a file that must open offline or fast later. file_info's
+        `cached` turns True when the fetch is done."""
+        return self._file_op("pin_file", "pin", link, file)
+
+    @_public('mutator', scoped=False)
+    def offload_file(self, link, file=None):
+        """Drop a file's bytes from this device and keep the file; returns {} (wire: 204).
+
+        Frees local disk; the file stays in the space and downloads
+        again on the next read. Refused while this device holds the
+        only copy: 409 file.not_durable."""
+        return self._file_op("offload_file", "offload", link, file)
+
+    @_public('mutator', scoped=False)
+    def retry_file(self, link, file=None):
+        """Run a file's waiting upload or fetch now; returns {} (wire: 204).
+
+        For a file that file_info shows as inflight or limited with
+        a `lastErr`, after the cause is gone (network back, storage
+        freed)."""
+        return self._file_op("retry_file", "retry", link, file)
+
     @_public('getter', scoped=False)
     def file_content(self, link, file=None):
         # ADR-026 §5
@@ -5073,6 +6309,44 @@ def _remove_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id):
     the same key re-declares it."""
     return _c().remove_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
                                      field_def_id)
+
+
+def _patch_dataset_field(spaceConfig, type_key, dataset_def_id, field_def_id,
+                         set=None, unset=None):
+    """Edit the DISPLAY leaves of one dataset field (wire: 204) → {}.
+
+    `set`: {path: value}, `unset`: [path]. Mutable: `name`,
+    `description`, and the paths under `xFormat` (a set targets a
+    leaf). The behaviour — key, kind, shape, scope, required,
+    mutableBy, stamp — is pinned: 400 dataset.immutable; change it
+    by removing the field and adding another. Ids from
+    list_datasets (`id` of the def, `id` inside `fields`)."""
+    return _c().patch_dataset_field(_space(spaceConfig), type_key, dataset_def_id,
+                                    field_def_id, set, unset)
+
+
+def _add_dataset_index(spaceConfig, type_key, dataset_def_id, index):
+    """Declare a secondary index on a records dataset → {indexDefId}.
+
+    index: {"key": "<slug>", "fields": [1 to 4 paths, "-" prefix =
+    descending], "sparse"?}. A path names a declared field of kind
+    string / number / boolean / datetime, or `_ver.id`; a shared
+    dataset also takes `_objectId`. A filter or sort on a leading
+    run of the fields becomes a range read. At most 8 for a
+    dataset, none unique, every part pinned (replace = remove and
+    add). Works on a dataset that holds records. 400
+    dataset.decl_invalid on a bad draft, 409 dataset.module_owned
+    on a module dataset."""
+    return _c().add_dataset_index(_space(spaceConfig), type_key, dataset_def_id, index)
+
+
+def _remove_dataset_index(spaceConfig, type_key, dataset_def_id, index_def_id):
+    """Remove one declared index (wire: 204) → {}.
+
+    index_def_id = the `id` inside list_datasets' `indexes`. The
+    records stay; reads that used the index scan again."""
+    return _c().remove_dataset_index(_space(spaceConfig), type_key, dataset_def_id,
+                                     index_def_id)
 
 
 # `_`-private (hidden from the tool inventory): progress@v1's transport

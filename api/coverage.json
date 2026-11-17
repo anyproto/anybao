@@ -1,9 +1,9 @@
 {
   "endpoints": {
     "DELETE /account/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:610b869e0d43824f",
-      "helper": null
+      "helper": "helper.set_account_icon (data=None)"
     },
     "DELETE /auth": {
       "excluded": "harness auth/boot",
@@ -31,18 +31,18 @@
       "helper": "anyclient.delete_space (host only; no guest helper)"
     },
     "DELETE /spaces/{spaceId}/bundles/{bundleId}": {
-      "excluded": "bundle uninstall — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:7d3fa73f70920280",
-      "helper": null
+      "helper": "helper.uninstall_bundle (unlisted, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
-      "fingerprint": "sha256:247042d7cc1aa2a3",
+      "fingerprint": "sha256:a48c84f07122ce5d",
       "helper": "helper.delete_collection"
     },
     "DELETE /spaces/{spaceId}/collections/{collectionId}/properties/{propId}": {
       "excluded": null,
-      "fingerprint": "sha256:0210cc9fcb9674ba",
+      "fingerprint": "sha256:7d4b6dbd87e0150a",
       "helper": "helper.delete_property (routed by the owner kind, ADR-029 §4)"
     },
     "DELETE /spaces/{spaceId}/files/{fileId}": {
@@ -53,32 +53,32 @@
     "DELETE /spaces/{spaceId}/guest-key": {
       "excluded": null,
       "fingerprint": "sha256:f6291d7e53c931c5",
-      "helper": null
+      "helper": "helper.revoke_guest_key"
     },
     "DELETE /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.revoke_invite (no record_id)"
     },
     "DELETE /spaces/{spaceId}/invites/{recordId}": {
       "excluded": null,
       "fingerprint": "sha256:c97d57adeba5fde9",
-      "helper": null
+      "helper": "helper.revoke_invite"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}": {
       "excluded": null,
-      "fingerprint": "sha256:51324ad1ad9cd85f",
+      "fingerprint": "sha256:d981c8287b4c3907",
       "helper": "helper.delete_object"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:3e81af59d6200494",
-      "helper": null
+      "helper": "helper.chat_delete"
     },
     "DELETE /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:119872c67db71c22",
-      "helper": null
+      "helper": "helper.delete_block"
     },
     "DELETE /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
       "excluded": null,
@@ -87,32 +87,32 @@
     },
     "DELETE /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:1ad82cdbdb12a209",
+      "fingerprint": "sha256:bd4696cbae07ae45",
       "helper": "helper.delete_type"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}": {
       "excluded": null,
-      "fingerprint": "sha256:213ccf9bed4b4664",
+      "fingerprint": "sha256:78bb28ce4d89d3fd",
       "helper": "helper.remove_dataset (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields/{fieldId}": {
       "excluded": null,
-      "fingerprint": "sha256:0022df0b248e4310",
+      "fingerprint": "sha256:bac0db54d82a2fc1",
       "helper": "helper.remove_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/datasets/{defId}/indexes/{indexId}": {
-      "excluded": "declared dataset indexes — program plumbing; pending a `_`-private helper beside create_dataset",
-      "fingerprint": "sha256:e3f2042e4a7e15da",
-      "helper": null
+      "excluded": null,
+      "fingerprint": "sha256:be1a91056d3e9f78",
+      "helper": "helper._remove_dataset_index (program plumbing — `_`-private, ADR-010 §1)"
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/parts/{partId}": {
       "excluded": "declaration removal — stores are additive (ADR-027 §2)",
-      "fingerprint": "sha256:d5d365913930754d",
+      "fingerprint": "sha256:e6a3e4303f96bcc4",
       "helper": null
     },
     "DELETE /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
-      "fingerprint": "sha256:d0cc40134703a945",
+      "fingerprint": "sha256:0ace7d3a2472e28a",
       "helper": "helper.delete_property"
     },
     "GET /account": {
@@ -121,14 +121,14 @@
       "helper": "helper.me"
     },
     "GET /account/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:921207f0e0f7c4ed",
-      "helper": null
+      "helper": "helper.account_icon"
     },
     "GET /account/limits": {
-      "excluded": "account storage pool + shared-spaces limit — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:77cb3ee4a091d793",
-      "helper": null
+      "helper": "helper.account_limits"
     },
     "GET /auth": {
       "excluded": "harness auth/boot",
@@ -186,7 +186,7 @@
       "helper": "helper.find_identities"
     },
     "GET /identities/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:49c5f53bb050d0a1",
       "helper": null
     },
@@ -196,14 +196,14 @@
       "helper": "anyclient.identity / helper.get_identity"
     },
     "GET /identities/{identity}/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:ca60fc93a03a39f9",
-      "helper": null
+      "helper": "helper.identity_icon"
     },
     "GET /local-discovery": {
-      "excluded": "device network setting — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:5225ad17448fe6e3",
-      "helper": null
+      "helper": "helper.local_discovery"
     },
     "GET /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
@@ -267,12 +267,12 @@
     },
     "GET /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
-      "fingerprint": "sha256:1c897e16be9c24c3",
-      "helper": null
+      "fingerprint": "sha256:d699c9f4fe59cf9f",
+      "helper": "helper.get_collection"
     },
     "GET /spaces/{spaceId}/collections/{collectionId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:0c7f3a89533f1a9d",
+      "fingerprint": "sha256:ceb8d3d714078502",
       "helper": "helper catalog (list_properties — routed by the owner kind, ADR-029 §4)"
     },
     "GET /spaces/{spaceId}/datasets": {
@@ -298,17 +298,17 @@
     "GET /spaces/{spaceId}/files/stats": {
       "excluded": null,
       "fingerprint": "sha256:d2cc98058ea337f7",
-      "helper": null
+      "helper": "helper.file_stats"
     },
     "GET /spaces/{spaceId}/files/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:f4d34761c7d7a759",
       "helper": null
     },
     "GET /spaces/{spaceId}/files/{fileId}": {
       "excluded": null,
       "fingerprint": "sha256:1602a86f115ce865",
-      "helper": "file_info"
+      "helper": "anyclient.file_info / helper.file_info"
     },
     "GET /spaces/{spaceId}/files/{fileId}/content": {
       "excluded": null,
@@ -318,17 +318,17 @@
     "GET /spaces/{spaceId}/files/{fileId}/status": {
       "excluded": null,
       "fingerprint": "sha256:049d6fa65dd2368c",
-      "helper": null
+      "helper": "helper.file_info"
     },
     "GET /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:194b8da107ff3179",
-      "helper": null
+      "helper": "helper.list_invites"
     },
     "GET /spaces/{spaceId}/invites/{recordId}": {
       "excluded": null,
       "fingerprint": "sha256:120f9eb9e6493efa",
-      "helper": null
+      "helper": "helper.list_invites (record_id=)"
     },
     "GET /spaces/{spaceId}/members": {
       "excluded": null,
@@ -338,27 +338,27 @@
     "GET /spaces/{spaceId}/members/me": {
       "excluded": null,
       "fingerprint": "sha256:10095b4faf14c1af",
-      "helper": null
+      "helper": "helper.get_member"
     },
     "GET /spaces/{spaceId}/members/requests": {
       "excluded": null,
       "fingerprint": "sha256:5895f797b0b71e62",
-      "helper": "join_requests"
+      "helper": "anyclient.join_requests / helper.list_join_requests"
     },
     "GET /spaces/{spaceId}/members/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:f4d34761c7d7a759",
       "helper": null
     },
     "GET /spaces/{spaceId}/members/{identity}": {
       "excluded": null,
       "fingerprint": "sha256:854949ce6e93a78f",
-      "helper": null
+      "helper": "helper.get_member"
     },
     "GET /spaces/{spaceId}/objects/{objectId}": {
       "excluded": null,
       "fingerprint": "sha256:9e6ded962f7e9e32",
-      "helper": null
+      "helper": "helper.get_object"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/backlinks": {
       "excluded": null,
@@ -373,22 +373,22 @@
     "GET /spaces/{spaceId}/objects/{objectId}/history": {
       "excluded": null,
       "fingerprint": "sha256:d6a870689deade06",
-      "helper": null
+      "helper": "helper.list_changes"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/diff": {
       "excluded": null,
       "fingerprint": "sha256:0aad0e93a4d3bba0",
-      "helper": null
+      "helper": "helper.diff_versions"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/{version}": {
       "excluded": null,
       "fingerprint": "sha256:f6555f204ced9efb",
-      "helper": null
+      "helper": "helper.get_version"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/history/{version}/datasets/{dataset}/records/{recordId}": {
       "excluded": null,
       "fingerprint": "sha256:a6de659a874ff7d1",
-      "helper": null
+      "helper": "helper.get_record_version"
     },
     "GET /spaces/{spaceId}/objects/{objectId}/links": {
       "excluded": null,
@@ -401,9 +401,9 @@
       "helper": "anyclient.get_properties (host only; no guest helper)"
     },
     "GET /spaces/{spaceId}/read-state/unread": {
-      "excluded": "unread counters of a space — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:49575bd9879d8eb8",
-      "helper": null
+      "helper": "helper.list_unread"
     },
     "GET /spaces/{spaceId}/sync-status": {
       "excluded": "diagnostic/sync (harness)",
@@ -427,22 +427,22 @@
     },
     "GET /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:b1284dd9ba5c7dcb",
-      "helper": null
+      "fingerprint": "sha256:a3bd50fcdf5fbcec",
+      "helper": "helper.get_type"
     },
     "GET /spaces/{spaceId}/types/{typeId}/datasets": {
       "excluded": null,
-      "fingerprint": "sha256:103f416a95b142ce",
+      "fingerprint": "sha256:9b7c8e01372f5e90",
       "helper": "helper.list_datasets (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "GET /spaces/{spaceId}/types/{typeId}/parts": {
       "excluded": "the flat GET …/types/:typeId/datasets is the read anybao keys on (collection per key); the part view has no consumer",
-      "fingerprint": "sha256:4a1e3cbe08edcec9",
+      "fingerprint": "sha256:a3c95c8cddbcb5b2",
       "helper": null
     },
     "GET /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:44d3c85f83567c98",
+      "fingerprint": "sha256:f18129e5183e376f",
       "helper": "helper catalog (list_properties)"
     },
     "GET /sync-status/subscribe": {
@@ -453,27 +453,27 @@
     "PATCH /spaces/{spaceId}": {
       "excluded": null,
       "fingerprint": "sha256:21555df709fe01fb",
-      "helper": null
+      "helper": "helper.patch_space"
     },
     "PATCH /spaces/{spaceId}/collections/{collectionId}": {
       "excluded": null,
-      "fingerprint": "sha256:f5d0d5102c77354f",
-      "helper": null
+      "fingerprint": "sha256:9a8ce426ac3d54c7",
+      "helper": "helper.patch_collection"
     },
     "PATCH /spaces/{spaceId}/collections/{collectionId}/properties/{propId}": {
       "excluded": null,
-      "fingerprint": "sha256:cc3b791a64af4228",
+      "fingerprint": "sha256:21daef5fb8df2386",
       "helper": "helper.patch_property (routed by the owner kind, ADR-029 §4)"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}": {
       "excluded": null,
       "fingerprint": "sha256:60c982bccbf2c947",
-      "helper": null
+      "helper": "helper.chat_edit"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks/{blockId}": {
       "excluded": null,
       "fingerprint": "sha256:3d40c081e5d23013",
-      "helper": null
+      "helper": "helper.patch_block"
     },
     "PATCH /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown": {
       "excluded": null,
@@ -483,31 +483,31 @@
     "PATCH /spaces/{spaceId}/settings": {
       "excluded": null,
       "fingerprint": "sha256:a3449a3e9774eac8",
-      "helper": null
+      "helper": "helper.set_space_settings"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:69c028c44819511b",
-      "helper": "anyclient.patch_type (hidden harness types, ADR-027 §2)"
+      "fingerprint": "sha256:bd9328fb0508054b",
+      "helper": "anyclient.patch_type / helper.patch_type, set_type_icon"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/datasets/{defId}": {
       "excluded": null,
-      "fingerprint": "sha256:3f6198b7417e09de",
+      "fingerprint": "sha256:4e370da1e9c2f39f",
       "helper": "helper.create_dataset (in-place patch of an existing def; `_`-private on the flat surface)"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields/{fieldId}": {
-      "excluded": "field descriptor edits — pending a helper (the datetime-migration follow-up)",
-      "fingerprint": "sha256:5e7a122b6ec27c6d",
-      "helper": null
+      "excluded": null,
+      "fingerprint": "sha256:76c8b998a006d4cd",
+      "helper": "helper._patch_dataset_field (program plumbing — `_`-private, ADR-010 §1)"
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/parts/{partId}": {
       "excluded": "part display slice (name/icon/pos/ui) — harness stores render nowhere",
-      "fingerprint": "sha256:a9794efc3b76c62f",
+      "fingerprint": "sha256:f0c1ba0cbf4eb222",
       "helper": null
     },
     "PATCH /spaces/{spaceId}/types/{typeId}/properties/{propId}": {
       "excluded": null,
-      "fingerprint": "sha256:507d5d6c3826c7ca",
+      "fingerprint": "sha256:57cf61fec2e1beae",
       "helper": "helper.patch_property (+ set_option / remove_option / reorder_property)"
     },
     "POST /account/access-code": {
@@ -643,72 +643,72 @@
     "POST /spaces/join": {
       "excluded": null,
       "fingerprint": "sha256:a517f4f04d8ea2d7",
-      "helper": "join_space"
+      "helper": "anyclient.join_space / helper.join_space"
     },
     "POST /spaces/one-to-one": {
       "excluded": null,
       "fingerprint": "sha256:a4bc101b110b1cc0",
-      "helper": null
+      "helper": "helper.open_direct_space"
     },
     "POST /spaces/one-to-one/register-incoming": {
       "excluded": null,
       "fingerprint": "sha256:3a418feab2506f4e",
-      "helper": null
+      "helper": "helper.register_incoming_direct (unlisted, ADR-010 §1)"
     },
     "POST /spaces/query": {
       "excluded": null,
       "fingerprint": "sha256:850675a4d337a2ba",
-      "helper": null
+      "helper": "helper.query_spaces"
     },
     "POST /spaces/query/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:de84456795344bc3",
       "helper": null
     },
     "POST /spaces/{spaceId}/acl/accept": {
       "excluded": null,
       "fingerprint": "sha256:917e963960917710",
-      "helper": "acl_accept"
+      "helper": "anyclient.acl_accept / helper.answer_join_request"
     },
     "POST /spaces/{spaceId}/acl/add": {
       "excluded": null,
       "fingerprint": "sha256:16beafccae6e7156",
-      "helper": null
+      "helper": "helper.add_members"
     },
     "POST /spaces/{spaceId}/acl/cancel-join": {
       "excluded": null,
       "fingerprint": "sha256:80a7b6ab7f42beac",
-      "helper": null
+      "helper": "helper.cancel_join"
     },
     "POST /spaces/{spaceId}/acl/decline": {
       "excluded": null,
       "fingerprint": "sha256:d198277706829809",
-      "helper": null
+      "helper": "helper.answer_join_request (permission=None)"
     },
     "POST /spaces/{spaceId}/acl/ownership": {
       "excluded": null,
       "fingerprint": "sha256:7b1b16c510eb8396",
-      "helper": null
+      "helper": "helper.transfer_ownership"
     },
     "POST /spaces/{spaceId}/acl/permissions": {
       "excluded": null,
       "fingerprint": "sha256:c13cdc7ae4e2fe90",
-      "helper": null
+      "helper": "helper.set_member_permissions"
     },
     "POST /spaces/{spaceId}/acl/remove": {
       "excluded": null,
       "fingerprint": "sha256:c8aa48322f7fc97f",
-      "helper": null
+      "helper": "helper.remove_members"
     },
     "POST /spaces/{spaceId}/acl/self-remove": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.leave_space"
     },
     "POST /spaces/{spaceId}/acl/stop-sharing": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.stop_sharing"
     },
     "POST /spaces/{spaceId}/aggregate": {
       "excluded": null,
@@ -717,12 +717,12 @@
     },
     "POST /spaces/{spaceId}/bundles": {
       "excluded": null,
-      "fingerprint": "sha256:9549c31896393e18",
+      "fingerprint": "sha256:e86d33cbb1662c81",
       "helper": "helper.ensure_bundle"
     },
     "POST /spaces/{spaceId}/bundles/{bundleId}/children": {
       "excluded": null,
-      "fingerprint": "sha256:8d71f1eb2c1e8676",
+      "fingerprint": "sha256:91a082446cac64b8",
       "helper": "helper.bundle_child"
     },
     "POST /spaces/{spaceId}/bundles/{bundleId}/resolve": {
@@ -737,21 +737,21 @@
     },
     "POST /spaces/{spaceId}/collections/{collectionId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:8756fa0b49089cbf",
+      "fingerprint": "sha256:b6b0fa580d40e767",
       "helper": "helper.add_property (routed by the owner kind, ADR-029 §4)"
     },
     "POST /spaces/{spaceId}/datasets/aggregate": {
-      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "excluded": null,
       "fingerprint": "sha256:27256facf72c2a39",
-      "helper": null
+      "helper": "helper.aggregate_dataset"
     },
     "POST /spaces/{spaceId}/datasets/query": {
-      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "excluded": null,
       "fingerprint": "sha256:a08cbaa3d815a9cf",
-      "helper": null
+      "helper": "helper.query_dataset"
     },
     "POST /spaces/{spaceId}/datasets/query/subscribe": {
-      "excluded": "space-level read of a shared dataset across its objects — pending a helper; any@v1 reads datasets per object (query) and objects per space (query_objects)",
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:6f68b01f67ddb614",
       "helper": null
     },
@@ -763,37 +763,37 @@
     "POST /spaces/{spaceId}/files/{fileId}/offload": {
       "excluded": null,
       "fingerprint": "sha256:fdc6fb8a4e06ea76",
-      "helper": null
+      "helper": "helper.offload_file"
     },
     "POST /spaces/{spaceId}/files/{fileId}/pin": {
       "excluded": null,
       "fingerprint": "sha256:093dacc706c1a094",
-      "helper": null
+      "helper": "helper.pin_file"
     },
     "POST /spaces/{spaceId}/files/{fileId}/retry": {
       "excluded": null,
       "fingerprint": "sha256:093dacc706c1a094",
-      "helper": null
+      "helper": "helper.retry_file"
     },
     "POST /spaces/{spaceId}/guest-key": {
       "excluded": null,
       "fingerprint": "sha256:770ea06b6d17d653",
-      "helper": null
+      "helper": "helper.create_guest_key"
     },
     "POST /spaces/{spaceId}/invite/accept": {
       "excluded": null,
       "fingerprint": "sha256:3ed540d7831ec586",
-      "helper": null
+      "helper": "helper.answer_space_invite (accept=True)"
     },
     "POST /spaces/{spaceId}/invite/decline": {
       "excluded": null,
       "fingerprint": "sha256:80a7b6ab7f42beac",
-      "helper": null
+      "helper": "helper.answer_space_invite (accept=False)"
     },
     "POST /spaces/{spaceId}/invites": {
       "excluded": null,
       "fingerprint": "sha256:27579ff5701fa1d8",
-      "helper": "create_invite"
+      "helper": "anyclient.create_invite / helper.create_invite"
     },
     "POST /spaces/{spaceId}/modify": {
       "excluded": null,
@@ -816,7 +816,7 @@
       "helper": "anyclient.query_objects / helper.query_objects"
     },
     "POST /spaces/{spaceId}/objects/query/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:20b13b00905d74c2",
       "helper": null
     },
@@ -828,27 +828,27 @@
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions-read": {
       "excluded": null,
       "fingerprint": "sha256:fe35c044f6c5f22c",
-      "helper": null
+      "helper": "helper.chat_mark_read (reactions=True)"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/reactions/{emoji}": {
       "excluded": null,
       "fingerprint": "sha256:483cf4887052c542",
-      "helper": null
+      "helper": "helper.chat_react"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/messages/{msgId}/read": {
       "excluded": null,
       "fingerprint": "sha256:5d9e1213a631d01b",
-      "helper": null
+      "helper": "helper.chat_mark_read"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/chat/read-all": {
       "excluded": null,
       "fingerprint": "sha256:22ae489a4085c582",
-      "helper": null
+      "helper": "helper.chat_mark_read (no message)"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/blocks": {
       "excluded": null,
       "fingerprint": "sha256:b8d6a66cc0e5d60b",
-      "helper": null
+      "helper": "helper.create_block"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/editor/{collection}/markdown/append": {
       "excluded": null,
@@ -863,36 +863,36 @@
     "POST /spaces/{spaceId}/objects/{objectId}/files/query": {
       "excluded": null,
       "fingerprint": "sha256:6a3a46060d269026",
-      "helper": null
+      "helper": "helper.query_files"
     },
     "POST /spaces/{spaceId}/objects/{objectId}/files/query/subscribe": {
-      "excluded": null,
+      "excluded": "a stream — a guest program has no stream primitive (C10 row 11, not now)",
       "fingerprint": "sha256:37e1cd5a91f77132",
       "helper": null
     },
     "POST /spaces/{spaceId}/one-to-one/accept": {
       "excluded": null,
       "fingerprint": "sha256:897ee56a66b5945c",
-      "helper": null
+      "helper": "helper.answer_direct_space (accept=True)"
     },
     "POST /spaces/{spaceId}/one-to-one/decline": {
       "excluded": null,
       "fingerprint": "sha256:47b0fbe3c53f768a",
-      "helper": null
+      "helper": "helper.answer_direct_space (accept=False)"
     },
     "POST /spaces/{spaceId}/properties/{objectId}/collections/{collectionId}": {
       "excluded": null,
-      "fingerprint": "sha256:952b68f60d928e40",
+      "fingerprint": "sha256:a97e747251a0c4f0",
       "helper": "helper.add_to_collection (trash = the bin)"
     },
     "POST /spaces/{spaceId}/properties/{objectId}/set/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:610a4b46b7abd5b4",
+      "fingerprint": "sha256:039ebb25ec1d8287",
       "helper": "helper.update_object"
     },
     "POST /spaces/{spaceId}/properties/{objectId}/type/{typeId}": {
       "excluded": null,
-      "fingerprint": "sha256:1e233f67dd185d5a",
+      "fingerprint": "sha256:736befcd66c1ff2f",
       "helper": "helper.set_type"
     },
     "POST /spaces/{spaceId}/query": {
@@ -922,27 +922,27 @@
     },
     "POST /spaces/{spaceId}/types/{typeId}/datasets/{defId}/fields": {
       "excluded": null,
-      "fingerprint": "sha256:42799411004296fe",
+      "fingerprint": "sha256:59a1c8c74f7b0d88",
       "helper": "helper.add_dataset_field (program plumbing — `_`-private on the flat surface, ADR-010 §1)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/datasets/{defId}/indexes": {
-      "excluded": "declared dataset indexes — program plumbing; pending a `_`-private helper beside create_dataset",
-      "fingerprint": "sha256:4f92ac008dadec1d",
-      "helper": null
+      "excluded": null,
+      "fingerprint": "sha256:653d98aa80e68c02",
+      "helper": "helper._add_dataset_index (program plumbing — `_`-private, ADR-010 §1)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/parts": {
       "excluded": null,
-      "fingerprint": "sha256:0444396df685b4fd",
+      "fingerprint": "sha256:be181290bb0fdcbd",
       "helper": "anyclient.add_part / helper._create_dataset (one part per store, ADR-027 §2)"
     },
     "POST /spaces/{spaceId}/types/{typeId}/parts/{partId}/datasets": {
       "excluded": "stores declare their dataset inline with the part (ADR-027 §2)",
-      "fingerprint": "sha256:2513be3f5478c2cf",
+      "fingerprint": "sha256:ea09b0a12134a31c",
       "helper": null
     },
     "POST /spaces/{spaceId}/types/{typeId}/properties": {
       "excluded": null,
-      "fingerprint": "sha256:7cb81a132845f545",
+      "fingerprint": "sha256:622b88104b1e2141",
       "helper": "helper.add_property"
     },
     "POST /spaces/{spaceId}/upsert": {
@@ -951,9 +951,9 @@
       "helper": "helper.upsert_records"
     },
     "PUT /account/icon": {
-      "excluded": "account and identity avatars — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:3be6f1c8306388b3",
-      "helper": null
+      "helper": "helper.set_account_icon"
     },
     "PUT /account/metadata": {
       "excluded": "harness/account profile",
@@ -966,9 +966,9 @@
       "helper": "anyclient.upsert_self_device (ADR-015 election, harness lifecycle)"
     },
     "PUT /local-discovery": {
-      "excluded": "device network setting — pending a helper",
+      "excluded": null,
       "fingerprint": "sha256:32a885d2a1a67c12",
-      "helper": null
+      "helper": "helper.set_local_discovery"
     },
     "PUT /local/collections": {
       "excluded": "low-level (harness) — the trace store (ADR-023): host anyapi only, no guest route",
