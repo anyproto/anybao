@@ -2483,7 +2483,9 @@ class _Client:
 
         ANYONE who holds the token reads the whole space, with no
         request and no approval. One for a space; a second call
-        returns the same token. Owner only."""
+        returns the same token. Owner only. Give the token to the
+        user WHOLE in the reply (a shortened token opens nothing),
+        and write it in no other place: no page, no memory."""
         return self._call("post", f"/v1/spaces/{space}/guest-key")
 
     @_public('mutator', label="Revoking the public read link of {space}")
@@ -2564,9 +2566,13 @@ class _Client:
         """Add accounts to the space by identity, with no invite; returns {}; ask the user first.
 
         `accounts`: [{"identity", "permission": "reader" | "writer" |
-        "admin", "name"?}]. Each account gets a pending invite to
-        accept. Identities come from find_identities. It makes the
-        space shared (409 acl.limit_reached at the plan's limit)."""
+        "admin", "name"?}]. Each account is a member AT ONCE, also
+        one that was removed before: get_member reads status
+        "active" and no invite row exists. On that account's own
+        devices the space shows as pending until the account
+        accepts it (answer_space_invite). Identities come from
+        find_identities. It makes the space shared (409
+        acl.limit_reached at the plan's limit)."""
         rows = []
         for a in accounts or []:
             row = {"identity": a.get("identity"), "permission": a.get("permission")}
@@ -2786,9 +2792,11 @@ class _Client:
 
     @_public('getter')
     def list_unread(self, space, cursor=None, limit=None):
-        """What became unread in the space on this device → {"changes": [...], "cursor"}.
+        """What became unread in ONE space on this device → {"changes": [...], "cursor"}.
 
-        Each change: {objectId, dataset, recordIds, tags, changeId},
+        There is no call for the whole account: for every space,
+        call it for each row of list_spaces. Each change:
+        {objectId, dataset, recordIds, tags, changeId},
         oldest first; for chat, `tags` are message / mention /
         reaction and `recordIds` are message ids. Without `cursor`
         the call returns no changes and a cursor at the present: keep
@@ -3760,8 +3768,10 @@ class _Client:
         removed. A value with no honest reading in the new kind
         ("soon" as a number) is NOT guessed: it is listed under
         `failed`, and then the old property STAYS as `<xKey>_old`
-        so nothing is lost — fix those values and delete_property
-        it. `type_key` is the owner, a type or a collection. Not
+        so nothing is lost. It stays on the owner, so EVERY object
+        keeps its old value under it, also the objects that
+        converted — fix the failed values and delete_property it.
+        `type_key` is the owner, a type or a collection. Not
         atomic: an edit of the old property on another device
         during the move is not copied, so do it while nobody edits
         the type. A view or a filter saved in the UI that names the
@@ -3931,7 +3941,8 @@ class _Client:
         xKey, every object's value is converted and copied, the old
         one is removed (change_property_kind; a value that does not
         convert is listed under `failed`, and the old property then
-        stays as `<xKey>_old`). Nothing is ever removed: a property
+        stays as `<xKey>_old`, with the old value of EVERY object,
+        also of the objects that converted). Nothing is ever removed: a property
         that the list leaves out stays (delete_property). Every key
         and draft is checked before the first write. Options of a
         choice: set_option. Returns {"typeId", "xKey", "changed":
