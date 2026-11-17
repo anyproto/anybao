@@ -160,6 +160,18 @@ def test_search_unwraps_hits_and_passes_scopes_limit():
     assert body == {"query": "qwery", "scopes": ["agent", "history"], "limit": 5}
 
 
+def test_search_reply_keeps_the_envelope():
+    # the score-gating caller reads mode / scoreScale (ADR-007 §5)
+    cap = []
+    reply = recall(cap).search_reply("qwery", scopes=("agent",), limit=5)
+    assert reply["hits"] == [HIT]
+    assert (reply["mode"], reply["vectorStatus"]) == ("hybrid", "used")
+    assert cap[0][2] == {"query": "qwery", "scopes": ["agent"], "limit": 5}
+    import pytest
+    with pytest.raises(ValueError, match="agent_memory_items"):
+        recall(cap).search_reply(" ")
+
+
 def test_search_defaults_all_four_scopes():
     cap = []
     recall(cap).search("q")

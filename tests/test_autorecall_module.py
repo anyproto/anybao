@@ -12,13 +12,13 @@ SRC = (PROGRAMS_DIR / "autorecall@v1.py").read_text()
 
 MEM_HIT = {"scope": "agent", "objectId": "brain1", "dataset": "agent_memory_items",
            "key": "agent_memory_items",
-           "recordId": "m1", "score": 0.033}
+           "recordId": "m1", "score": 1.0}
 TURN_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_turns",
             "key": "agent_turns",
-            "recordId": "t1", "score": 0.032}
+            "recordId": "t1", "score": 0.954}
 CHUNK_HIT = {"scope": "history", "objectId": "chat1", "dataset": "agent_chunks",
              "key": "agent_chunks",
-             "recordId": "c1", "score": 0.017}
+             "recordId": "c1", "score": 0.913}
 
 MEM_REC = {"id": "m1", "category": "preference", "context": "prefers dark roast",
            "confidence": 8, "validFrom": {"$date": 1751328000000},        # 2025-07-01
@@ -29,19 +29,26 @@ CHUNK_REC = {"id": "c1", "seq": 1, "level": 1, "fromSeq": 1, "toSeq": 3,
              "summary": "planned the trip", "periodStart": {"$date": 1751328000000}}
 
 
+# the reply envelopes the gate tells apart (ADR-007 §5)
+UNIT = {"mode": "hybrid", "scoreScale": "unit", "vectorStatus": "used"}
+RAW = {"mode": "hybrid", "vectorStatus": "used"}        # a server before any#335
+FTS = {"mode": "fts", "vectorStatus": "disabled"}       # no embedder / loading
+
+
 class FakeRecall:
-    def __init__(self, hits, recs, fail=False):
+    def __init__(self, hits, recs, fail=False, envelope=UNIT):
         self.hits = list(hits)
+        self.envelope = envelope
         self.recs = recs
         self.fail = fail
         self.searches = []
         self.hydrations = 0
 
-    def search(self, query, scopes=None, limit=None):
+    def search_reply(self, query, scopes=None, limit=None):
         if self.fail:
             raise OSError("network down")
         self.searches.append({"query": query, "scopes": scopes, "limit": limit})
-        return self.hits
+        return {**self.envelope, "hits": self.hits}
 
     def hydrate(self, hits):
         self.hydrations += 1
@@ -62,10 +69,10 @@ class FakeMemory:
         return {"itemId": item_id, "accessCount": current_count + 1}
 
 
-def load(hits, recs=None, fail=False):
+def load(hits, recs=None, fail=False, envelope=UNIT):
     rec = FakeRecall(hits, recs or {
         "agent_memory_items": [MEM_REC], "agent_turns": [TURN_REC],
-        "agent_chunks": [CHUNK_REC]}, fail=fail)
+        "agent_chunks": [CHUNK_REC]}, fail=fail, envelope=envelope)
     mem = FakeMemory()
     modules = {
         "recall@v1": SimpleNamespace(recall=lambda client, space, **kw: rec),
@@ -104,10 +111,44 @@ def test_injects_tool_framed_pair_with_both_sections():
 
 
 def test_generic_message_below_threshold_injects_nothing():
-    weak = [{**MEM_HIT, "score": 0.008}, {**TURN_HIT, "score": 0.011}]  # deep-rank RRF noise
+    # rank 4 on both legs, and rank 2 of a single-leg form
+    weak = [{**MEM_HIT, "score": 0.875}, {**TURN_HIT, "score": 0.5}]
     g, rec, _ = load(weak)
     assert g["plan"](None, "s1", "hi") == {"messages": [], "injected": []}
     # threshold cut happens before any hydration round-trip
+    assert rec.hydrations == 0
+
+
+def test_raw_rrf_reply_gates_on_the_raw_floor():
+    # hybrid with no scoreScale = the raw RRF sum at k 60
+    hits = [{**MEM_HIT, "score": 0.033}, {**TURN_HIT, "score": 0.011}]
+    g, _, _ = load(hits, envelope=RAW)
+    out = g["plan"](None, "s1", "coffee?")
+    content = out["messages"][1]["parts"][0]["content"]
+    assert "prefers dark roast" in content and "Related history:" not in content
+    assert [h["recordId"] for h, _ in out["injected"]] == ["m1"]
+
+
+def test_non_hybrid_reply_injects_nothing():
+    # BM25 scores clear any floor, and mean nothing across queries
+    hits = [{**MEM_HIT, "score": 7.4}, {**TURN_HIT, "score": 3.1}]
+    for envelope in (FTS, {"mode": "vector"}, {}):
+        g, rec, mem = load(hits, envelope=envelope)
+        assert g["plan"](None, "s1", "coffee?") == {"messages": [], "injected": []}
+        assert rec.hydrations == 0 and mem.bumps == []
+
+
+def test_unknown_score_scale_injects_nothing():
+    g, rec, _ = load([MEM_HIT], envelope={"mode": "hybrid", "scoreScale": "z"})
+    assert g["plan"](None, "s1", "coffee?") == {"messages": [], "injected": []}
+    assert rec.hydrations == 0
+
+
+def test_title_hit_never_passes_the_gate():
+    # a title hit keeps BM25 in a hybrid reply, in the same hits list
+    title = {**MEM_HIT, "score": 12.0, "match": "title"}
+    g, rec, _ = load([title])
+    assert g["plan"](None, "s1", "coffee?") == {"messages": [], "injected": []}
     assert rec.hydrations == 0
 
 

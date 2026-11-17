@@ -143,8 +143,9 @@ The recall tool composes the axes the storage now supports (ADR-006):
   trace (`effects.of` / viewer). Every summary keeps its pointers.
 **Auto-recall injection — the recall-side structural mechanism, with
 tool-result framing.** The harness runs `recall.search(user_message)`
-at invocation start (index-backed, no LLM call) and injects top 3–5
-hits, budget-capped — A-MEM §3.4's per-interaction retrieval, which v1
+at invocation start (index-backed, no LLM call) and injects at most 5
+memory and 3 history hits that clear the relevance gate (below),
+budget-capped — A-MEM §3.4's per-interaction retrieval, which v1
 never wired. Two constraints from prior experience (user: injected
 memory near the system prompt gets treated as ground truth) and §1a:
 - **Framed as a tool result, not prompt truth**: rendered as a
@@ -168,8 +169,38 @@ memory near the system prompt gets treated as ground truth) and §1a:
   covered by the boot window are skipped — the window's anchor seq,
   ADR-006 §2, is the boundary; auto-recall is the TOPICAL
   channel complementing the window's RECENCY channel); pointers not
-  bodies; relevance threshold so generic messages inject nothing.
+  bodies; relevance gate so generic messages inject nothing (below).
   The write-side rule is untouched: chunks never become memory items.
+- **The relevance gate reads the reply, not only the score** (amended
+  2026-11-14, any#335). A score floor belongs to one score scale, so
+  the gate reads the search reply's `mode` and `scoreScale`:
+  - `scoreScale: "unit"` (hybrid; the fused RRF sum over its maximum,
+    0–1, 1 = first on every fused leg): `min_score` 0.90. A
+    single-leg fusion form scores rank r as 1/r, so the gate admits
+    its first hit only; a two-leg form admits hits near the top of
+    BOTH legs. A hit present in one leg only (a memory item whose
+    vector is still pending) clears it only when the server runs that
+    leg alone. The caps are upper bounds; about one to two hits per
+    turn is the expected case (measured: 1.72 per turn, 98% relevant,
+    against 5.00 at 81% on the raw-sum gate).
+  - `mode: "hybrid"` without `scoreScale` (a server before any#335;
+    the raw RRF sum at k 60, rank 1 in one leg ≈ 0.016): `min_score`
+    0.015.
+  - any other `mode` (fts or vector: the embedder is absent, loading
+    or failing), or a `scoreScale` the gate does not know: inject
+    nothing. BM25 and cosine have no fixed floor. Consequence: a host
+    without an embedder — the embedded server on iOS and Android —
+    has no auto-recall, and a desktop host has none while its model
+    loads; the agent's explicit search still works.
+  - Title hits (`match` set, BM25 in every mode) never pass the gate.
+
+  `recall.search` stays a bare list of hits; `recall.search_reply`
+  returns the same hits inside the reply envelope (`mode`,
+  `scoreScale`). The 0.90 floor was swept on Qwen3 at 768 dimensions
+  and on EmbeddingGemma 2; a sweep on another embedder that moves it
+  amends this line. Memory and history share one search, so they
+  compete for the slots that clear the floor; splitting them is
+  decided from the §1b ROI data.
 The agent's explicit search remains for deliberate digging.
 Category-name inventory stays (cheap, cache-stable); a ranked "top
 memories" digest is deferred until scoring fields are consumed.
