@@ -168,6 +168,44 @@ def test_deep_history_guard_skips_boot_covered_hits():
     assert g["covered_by_boot"](CHUNK_REC, "agent_chunks", 1)
 
 
+class ChunkClient:
+    """query() over a fixed chunk list — the level-1 children."""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def query(self, space, object_id, dataset, filter=None, limit=None):
+        return [c for c in self.chunks
+                if all(c.get(k) == v for k, v in (filter or {}).items())]
+
+
+def test_level2_chunk_range_is_child_chunks_not_turns():
+    # L2 chunk #11 covers L1 chunks 1–10; L1 chunk #1 starts at turn 1
+    l2 = {"id": "c1", "seq": 11, "level": 2, "fromSeq": 1, "toSeq": 10,
+          "summary": "a month of trips", "periodStart": {"$date": 1751328000000}}
+    g, _, _ = load([CHUNK_HIT], {"agent_chunks": [l2]})
+    assert "[chunk #11 (L2), chunks 1–10]" in g["history_line"](l2, "agent_chunks")
+
+    kids = ChunkClient([{"seq": 1, "level": 1, "fromSeq": 1, "toSeq": 10}])
+    # the raw tail starts at turn 5: chunk seq 1 >= 5 is false AND turn 1
+    # is older than the tail, so the hit stays
+    msgs = g["plan"](kids, "s1", "trip?", boot_min_seq=5)["messages"]
+    assert "chunk #11" in msgs[1]["parts"][0]["content"]
+    # a tail that starts at turn 1 holds every turn the chunk covers
+    assert g["plan"](kids, "s1", "trip?", boot_min_seq=1)["messages"] == []
+
+    # the bug: child chunk seq 45 read as a turn seq is "older than the
+    # tail" although the chunk's turns (431…) all sit inside it
+    late = {**l2, "seq": 55, "fromSeq": 45, "toSeq": 54}
+    kids = ChunkClient([{"seq": 45, "level": 1, "fromSeq": 431, "toSeq": 440}])
+    assert g["first_turn"](kids, "s1", CHUNK_HIT, late) == 431
+    assert g["covered_by_boot"](late, "agent_chunks", 400, 431)
+    assert not g["covered_by_boot"](late, "agent_chunks", 400, 45)   # the old reading
+    # a missing child leaves the span unknown: not covered
+    assert g["first_turn"](ChunkClient([]), "s1", CHUNK_HIT, late) is None
+    assert not g["covered_by_boot"](late, "agent_chunks", 400)
+
+
 def test_memory_cap_and_budget_respected():
     hits = [{**MEM_HIT, "recordId": f"m{i}"} for i in range(8)]
     recs = {"agent_memory_items": [

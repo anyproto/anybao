@@ -78,23 +78,45 @@ def memory_line(item):
 
 def history_line(rec, dataset):
     if dataset == "agent_chunks":
+        # a level-1 range is turn seqs, a higher one child CHUNK seqs
+        # (ADR-006 §2): the label names the unit the numbers are in
+        unit = "turns" if rec.get("level", 1) <= 1 else "chunks"
         return (f"- related past discussion, {_date(rec.get('periodStart'))}: "
                 f"{rec.get('summary', '')} [chunk #{rec.get('seq')} "
-                f"(L{rec.get('level', 1)}), turns {rec.get('fromSeq')}–{rec.get('toSeq')}]")
+                f"(L{rec.get('level', 1)}), {unit} {rec.get('fromSeq')}–{rec.get('toSeq')}]")
     first = (rec.get("userText") or "").splitlines() or [""]
     return (f"- related past discussion, {_date(rec.get('createdAt'))}: "
             f"“{first[0][:100]}” [turn #{rec.get('seq')}]")
 
 
-def covered_by_boot(rec, dataset, boot_min_seq):
+def first_turn(client, space, hit, rec):
+    """The oldest TURN seq a chunk covers. A level-1 chunk says it in
+    `fromSeq`; a higher level's `fromSeq` is a child chunk seq (ADR-006
+    §2), so the walk follows the first child down to level 1. None when
+    a child is missing: the span is unknown."""
+    seq, level = rec.get("fromSeq"), rec.get("level", 1)
+    while level > 1 and seq is not None:
+        level -= 1
+        rows = client.query(space, hit["objectId"], "agent_chunks",
+                            filter={"level": level, "seq": seq}, limit=1)
+        seq = rows[0].get("fromSeq") if rows else None
+    return seq
+
+
+def covered_by_boot(rec, dataset, boot_min_seq, first_turn_seq=None):
     """Deep-history guard: a turn in the boot window's raw tail, or a
-    chunk fully inside it, is already visible at full resolution."""
+    chunk fully inside it, is already visible at full resolution.
+    `first_turn_seq` is the chunk's oldest turn (`first_turn`); without
+    it a level-1 chunk falls back to its own `fromSeq`, and a higher
+    level, whose span is then unknown, counts as not covered."""
     if boot_min_seq is None:
         return False
     if dataset == "agent_turns":
         return rec.get("seq", -1) >= boot_min_seq
     if dataset == "agent_chunks":
-        return rec.get("fromSeq", -1) >= boot_min_seq
+        if first_turn_seq is None and rec.get("level", 1) <= 1:
+            first_turn_seq = rec.get("fromSeq")
+        return first_turn_seq is not None and first_turn_seq >= boot_min_seq
     return False
 
 
@@ -181,8 +203,12 @@ def _plan(client, space, user_text, boot_min_seq, policy):
 
     hist_lines = []
     for h, r in pairs:
-        if h["key"] not in _HISTORY_DATASETS or len(hist_lines) >= p["max_history"] \
-                or covered_by_boot(r, h["key"], boot_min_seq):
+        if h["key"] not in _HISTORY_DATASETS or len(hist_lines) >= p["max_history"]:
+            continue
+        oldest = None
+        if boot_min_seq is not None and h["key"] == "agent_chunks":
+            oldest = first_turn(client, space, h, r)
+        if covered_by_boot(r, h["key"], boot_min_seq, oldest):
             continue
         line = history_line(r, h["key"])
         cost = approx_tokens(line)

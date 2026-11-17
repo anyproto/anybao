@@ -197,6 +197,13 @@ GENERIC_TRAITS = {
     "signed_tool_calls": False, "pdf_input": "none", "web_search": False,
 }
 
+# What a tier is FOR sets a default too (ADR-005 §1.3): `classify` is the
+# one-off judgment — a short answer, no reasoning pass. Applied over the
+# profile, under the tier row's own `traits`.
+TIER_TRAITS = {
+    "classify": {"thinking": "off"},
+}
+
 # --- Profiles (ADR-005 §1.7): one entry per model family ---------------------
 # `match` is tried against the tier's `model` (first hit, in order)
 # when the tier names no `profile`; `traits` are deviations from
@@ -286,13 +293,15 @@ def _profile_name(prov):
     return "generic"
 
 
-def _resolve_traits(prov):
-    """GENERIC_TRAITS, then the profile's deviations, then the tier
-    row's own `traits` — what this endpoint can do (`web_search`,
-    `vision`) is the tier's to say, wherever the model family is."""
+def _resolve_traits(prov, tier_name=None):
+    """GENERIC_TRAITS, then the profile's deviations, then the tier's
+    own default (`TIER_TRAITS`), then the tier row's `traits` — what
+    this endpoint can do (`web_search`, `vision`) is the tier's to say,
+    wherever the model family is."""
     name = _profile_name(prov)
     traits = dict(GENERIC_TRAITS)
     traits.update(PROFILES[name]["traits"])
+    traits.update(TIER_TRAITS.get(tier_name, {}))
     _check_traits(traits, f"profile {name!r}")
     tier = prov.get("traits")
     if tier is not None:
@@ -963,13 +972,86 @@ def _thinking_reasoning_effort(req, traits):
     return req
 
 
+# `thinking: "off"` on the Anthropic wire, by model. Current models
+# think when the request names no `thinking`, so off is a value to
+# send: `disabled` where the model takes it, `between_tools` where that
+# is its only off form, nothing where thinking cannot be turned off
+# (first match).
+_ANTHROPIC_THINKING_OFF = (
+    (r"fable|mythos|opus-5-5", None),
+    (r"sonnet-5-5", {"type": "between_tools"}),
+    (r"", {"type": "disabled"}),
+)
+
+
+# `thinking: "on"`: the models that take a token budget. Every later
+# model takes `adaptive` and answers a budget with a 400.
+_ANTHROPIC_BUDGET_MODELS = r"claude-3|haiku-4|(opus|sonnet)-4-([0-5]|20\d{6})(-|$)"
+
+
 def _finish_anthropic(req, traits):
-    # budget_tokens must be ≥ 1024 and < max_tokens: a small output cap
-    # (a classify-style call) leaves no room — send no thinking block
-    budget = min(16000, req["max_tokens"] - 1)
-    if traits["thinking"] == "on" and budget >= 1024:
-        req["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    model = req.get("model") or ""
+    if traits["thinking"] == "off":
+        for pattern, value in _ANTHROPIC_THINKING_OFF:
+            if re.search(pattern, model):
+                if value:
+                    req["thinking"] = dict(value)
+                break
+    elif traits["thinking"] == "on":
+        if not re.search(_ANTHROPIC_BUDGET_MODELS, model):
+            req["thinking"] = {"type": "adaptive"}
+        else:
+            # budget_tokens must be ≥ 1024 and < max_tokens: a small
+            # output cap leaves no room — send no thinking block
+            budget = min(16000, req["max_tokens"] - 1)
+            if budget >= 1024:
+                req["thinking"] = {"type": "enabled", "budget_tokens": budget}
     return req
+
+
+# --- `thinking: "off"` a provider refuses (ADR-005 §1.3) ---------------------
+# Off is an intent, and some endpoints cannot honor it ("Reasoning is
+# mandatory for this endpoint and cannot be disabled", a 400). The call
+# then steps down: the least reasoning the wire can ask for, then no
+# reasoning parameter at all. The rung that worked is kept for the run,
+# so one model pays the refused attempt once.
+_OFF_KEYS = ("thinking", "reasoning", "reasoning_effort", "chat_template_kwargs")
+_REFUSED_OFF = re.compile(r"reason|think", re.I)
+_OFF_RUNG = {}   # (backend, model) → index into the steps that answered
+
+
+def _off_steps(req):
+    """The request's `off` spelling, then each softer one, last none."""
+    if "reasoning" in req:            # OpenRouter
+        softer = [{"reasoning": {"effort": "minimal"}}]
+    elif "reasoning_effort" in req:   # OpenAI and the hosts that copy it
+        softer = [{"reasoning_effort": "minimal"}, {"reasoning_effort": "low"}]
+    else:
+        softer = []
+    return [None, *softer, {}]
+
+
+def _post_off(payload, fold, key):
+    """`_post` for a request that spells `thinking: "off"`, stepping
+    down `_off_steps` while the provider refuses the reasoning setting."""
+    first = payload["json"]
+    steps = _off_steps(first)
+    i = min(_OFF_RUNG.get(key, 0), len(steps) - 1)
+    while True:
+        req = first
+        if steps[i] is not None:
+            req = {k: v for k, v in first.items() if k not in _OFF_KEYS}
+            req.update(steps[i])
+        try:
+            raw = _post({**payload, "json": req}, fold)
+        except LlmError as e:
+            if e.status != 400 or not _REFUSED_OFF.search(e.body or "") \
+                    or i == len(steps) - 1:
+                raise
+            i += 1
+            continue
+        _OFF_RUNG[key] = i
+        return raw
 
 
 def _finish_openai(req, traits):
@@ -1225,7 +1307,7 @@ def _resolve(tier):
     prov = effect("config.get", {"key": f"llm.tier.{tier}"})["value"]  # noqa: F821 - guest global
     if prov.get("provider") not in ADAPTERS:
         raise ConfigError(f"llm.tier.{tier}: unknown provider {prov.get('provider')!r}")
-    name, traits = _resolve_traits(prov)
+    name, traits = _resolve_traits(prov, tier)
     if traits["web_search"] and prov["provider"] != "openai-compat":
         # only the openai-compat wire carries it (`web_search_options`)
         raise ConfigError(f"llm.tier.{tier}: web_search needs provider 'openai-compat', "
@@ -1577,7 +1659,12 @@ def chat(messages, system="", tier="codegen", tools=None, max_tokens=None):
     cred = _credential(prov, backend)
     if cred:
         payload["credential"] = cred
-    raw = _post(payload, lambda body: _fold(adapter, body, stream))
+    fold = lambda body: _fold(adapter, body, stream)  # noqa: E731
+    # an `off` the row's own `options` spell is the row's word: sent as is
+    if traits["thinking"] == "off" and not set(_OFF_KEYS) & set(prov.get("options") or {}):
+        raw = _post_off(payload, fold, (backend, prov["model"]))
+    else:
+        raw = _post(payload, fold)
     raw = be.get("normalize", lambda r: r)(raw)
     return _wall_out(table, _lift(adapter.parse_response(raw), traits))
 
