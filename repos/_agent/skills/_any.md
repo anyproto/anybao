@@ -96,6 +96,13 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   searches everything: pages, chat, properties, memory, synced mail
   (reading mail: `c.get_skill("gmailSync")`). Hits are records:
   iterate `r["hits"]` and dedup on objectId.
+- **Search is lexical plus semantic, without stemming or fuzzy match.**
+  Inside `query`, `"a phrase"` and a prefix `plan*` work; the prefix is
+  the recall tool. For a narrower answer pass `filter=` (the
+  query_objects grammar — "the best rows of this collection"),
+  `require=` / `exclude=` (terms a hit must or must not contain),
+  `mode="title"` (names only), `passages=` for more chunks of a hit.
+  help(c.search) has them all.
 - **Records are not objects.** Mail, chat messages, memory, triggers
   are records in an object's datasets. c.list_datasets(space,
   type_or_object) names the stores and their fields; read with
