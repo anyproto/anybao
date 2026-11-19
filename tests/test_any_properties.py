@@ -419,7 +419,7 @@ def test_an_archived_property_takes_no_write_and_the_error_says_why():
     fx = archived_rig()
     c = client(fx)
     for key in ("old", "Old", "pOLD"):
-        with pytest.raises(ValueError, match="removed by the user in the app.*Undo in the app"):
+        with pytest.raises(ValueError, match="removed by the user in the app.*restore_property"):
             c.update_object("s1", "o1", {"task": {key: "v"}})
     with pytest.raises(ValueError, match="removed by the user in the app"):
         c.query_objects("s1", filter={"task.old": "v"})
@@ -429,7 +429,16 @@ def test_an_archived_property_takes_no_write_and_the_error_says_why():
     assert not posts(fx, "/set/bafyTASK")
 
 
-def test_any_v1_never_writes_the_archive_marker():
+def test_restore_property_unsets_the_marker_and_nothing_sets_it():
+    fx = archived_rig()
+    c = client(fx)
+    assert c.restore_property("s1", "task", "Old") == {"propId": "pOLD", "xKey": "old"}
+    assert [(p.rsplit("/", 1)[-1], b) for v, p, b in fx.calls if v == "PATCH"] == [
+        ("pOLD", {"unset": ["xFormat.anyui.archived"]})]
+    with pytest.raises(ValueError, match="is not archived"):
+        c.restore_property("s1", "task", "status")
+    with pytest.raises(ValueError, match='no archived property "nope" — archived: "old"'):
+        c.restore_property("s1", "task", "nope")
     g = load(wire())
     assert "archive_property" not in g
     assert "confirm with the user" in g["delete_property"].__doc__
@@ -547,7 +556,7 @@ def test_delete_type_and_delete_collection_wire_shapes():
 def test_flat_surface_exposes_the_new_tools_with_docs():
     g = load(wire())
     for name in ("patch_property", "set_option", "remove_option", "reorder_property",
-                 "delete_property", "delete_type", "delete_collection",
+                 "delete_property", "restore_property", "delete_type", "delete_collection",
                  "set_type", "add_to_collection",
                  "remove_from_collection", "trash", "restore", "list_collections",
                  "create_collection", "list_apps",

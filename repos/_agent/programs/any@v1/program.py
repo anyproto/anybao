@@ -572,7 +572,7 @@ def _slug(pdef):
 # sets `xFormat.anyui.archived` to true and Undo unsets it — the
 # definition, its id and every stored value stay. The server does not read
 # a vendor key, so each client derives the active schema with this one
-# predicate. any@v1 only READS the marker: it never archives or restores.
+# predicate. any@v1 never SETS the marker; `restore_property` unsets it.
 
 def _is_archived(pdef):
     bag = _xformat(pdef).get("anyui")
@@ -1024,8 +1024,9 @@ class _Client:
             raise ValueError(
                 f'property "{seg}" was removed by the user in the app '
                 "(archived): it is hidden there and takes no reads or writes. "
-                "Only the user brings it back (Undo in the app); "
-                "list_properties(…, archived=True) shows it. "
+                "restore_property(space, <owner>, "
+                f'"{seg}") brings it back with its values — only on the '
+                "user's ask. "
                 f"Active properties: {self._prop_handles(space, type_id)}")
         return None
 
@@ -3612,7 +3613,8 @@ class _Client:
         — the server would answer a nonexistent id with a silent [].
         A property the user removed in the app (archived) is NOT listed and
         resolves nowhere; `archived=True` lists those instead (no `handle`;
-        only the user brings one back, `delete_property` removes it for good)."""
+        `restore_property` brings one back, `delete_property` removes it for
+        good)."""
         tid = self._resolve_owner_or_raise(space, type_key)
         self._props_cache.pop((space, tid), None)   # a listing reads fresh
         rows = []
@@ -4439,7 +4441,8 @@ class _Client:
                 raise ValueError(
                     f'xKey "{body["xKey"]}" is held by a property the user '
                     "removed in the app (archived). Pass another xKey, or omit it "
-                    "and the name gives a free one.")
+                    "and the name gives a free one; restore_property brings the "
+                    "old one back, on the user's ask.")
         else:
             stem = _slugify_xkey(body.get("name") or "")
             taken = held | {p.get("xKey") for p in self._type_props(space, tid)}
@@ -4642,6 +4645,32 @@ class _Client:
                            {"set": {"xFormat.pos": pos}})
         self._props_cache.pop((space, tid), None)
         return {"order": [p["handle"] for p in rest]}
+
+    @_public('mutator', label="Restoring the property {prop_key} of {type_key} in {space}")
+    def restore_property(self, space, type_key, prop_key):
+        """Bring back a property the user removed in the app (archived).
+
+        The definition returns with its id, its values and its place in the
+        order — what Undo in the app does. `prop_key` is the xKey, the name or
+        the id (`list_properties(…, archived=True)` shows the archived ones).
+        Only on the user's ask: they removed it. There is no opposite verb —
+        removal is `delete_property`. `type_key` is the owner — a type or a
+        collection. Returns {"propId", "xKey"}."""
+        tid = self._resolve_owner_or_raise(space, type_key)
+        self._props_cache.pop((space, tid), None)
+        p = self._find_archived(space, tid, prop_key)
+        if p is None:
+            if any(prop_key in (q.get("id"), q.get("handle"), q.get("name"), q.get("xKey"))
+                   for q in self._type_props(space, tid)):
+                raise ValueError(f'property "{prop_key}" is not archived — it is active')
+            names = ", ".join(f'"{q.get("xKey") or q.get("name") or q.get("id")}"'
+                              for q in self._archived_props(space, tid))
+            raise ValueError(f'no archived property "{prop_key}" — archived: '
+                             f"{names or 'none'}")
+        self._call("patch", f"{self._props_path(space, tid)}/{p['id']}",
+                   {"unset": ["xFormat.anyui.archived"]})
+        self._props_cache.pop((space, tid), None)
+        return {"propId": p["id"], "xKey": p.get("xKey")}
 
     @_public('mutator')
     def delete_property(self, space, type_key, prop_key):

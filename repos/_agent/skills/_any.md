@@ -46,7 +46,8 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   c.patch_property(…, set={"xFormat.type": …}) changes a slug later.
   Remove a property with c.delete_property(s, type, key) — permanent,
   so confirm with the user first. A property the user removed in the
-  app (archived) is not listed and takes no reads or writes.
+  app (archived) is not listed and takes no reads or writes;
+  c.restore_property brings it back when the user asks.
   Never edit any.type or any.collections by hand.
 - Queries: `c.query_objects(s, filter={"any.type": "book",
   "book.year": 1965})`, membership `{"any.collections":
