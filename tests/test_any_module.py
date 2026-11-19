@@ -1570,6 +1570,49 @@ def test_search_returns_full_envelope_and_optional_fields():
     assert fx.calls[1][2] == {"query": "q"}   # unset opts stay off the wire
 
 
+def test_search_options_ride_the_wire():
+    fx = wire(replies={**_CAT, "/search": {"hits": [], "mode": "fts"}})
+    client(fx).search("s1", "ship", mode="fts", require=['"due soon"', "pri*"],
+                      exclude="draft", passages=3, max_data=-1,
+                      filter={"any.type": "task", "task.status": "open"})
+    body = next(b for v, p, b in fx.calls if p.endswith("/search"))
+    assert body == {
+        "query": "ship", "mode": "fts",
+        "require": ['"due soon"', "pri*"], "exclude": ["draft"],
+        "passages": 3, "maxData": -1,
+        # the filter is the query_objects grammar, resolved to server ids
+        "filter": {"any.type": "bafyTASK", "bafyTASK.bafySTATUS": "open"}}
+
+
+def test_search_zero_options_stay_off_the_wire():
+    fx = wire(replies={"/search": {"hits": []}})
+    client(fx).search("s1", "q", require=[], exclude=[], passages=0, filter={})
+    assert fx.calls[0][2] == {"query": "q"}
+
+
+def test_search_reply_keeps_truncated_match_and_passages():
+    reply = {"hits": [{"objectId": "o1", "match": "prefix", "score": 1.0,
+                       "passages": [{"chunk": 2, "data": "x", "score": 0.5}]}],
+             "mode": "title", "truncated": True, "vectorStatus": "skipped"}
+    fx = wire(replies={"/search": reply})
+    r = client(fx).search("s1", "q", enrich=False)
+    assert r["truncated"] is True and r["vectorStatus"] == "skipped"
+    assert r["hits"][0]["match"] == "prefix"
+    assert r["hits"][0]["passages"][0]["chunk"] == 2
+
+
+def test_search_refuses_a_bad_option_before_any_call():
+    fx = wire(replies={**_CAT, "/search": {"hits": []}})
+    c = client(fx)
+    for kw in ({"require": [1]}, {"exclude": {"a": 1}}, {"passages": 11},
+               {"passages": "2"}, {"max_data": "all"}):
+        with pytest.raises(ValueError, match="search:"):
+            c.search("s1", "q", **kw)
+    with pytest.raises(ValueError, match='type "unicorn" doesn.t exist'):
+        c.search("s1", "q", filter={"any.type": "unicorn"})
+    assert not any(p.endswith("/search") for v, p, b in fx.calls)
+
+
 def test_search_enriches_hits_with_title_and_type():
     fx = wire(replies={
         "/search": {"hits": [
@@ -2279,6 +2322,8 @@ def test_search_types_kwarg_redirects_to_query_objects():
     # A18: the guessed types= kwarg gets the redirect, not a bare TypeError
     g = load(wire(config={"any.base_url": "http://any"}))
     with pytest.raises(TypeError, match="any.type"):
+        g["search"](SID, "q", types=["task"])
+    with pytest.raises(TypeError, match="filter"):
         g["search"](SID, "q", types=["task"])
 
 

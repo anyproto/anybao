@@ -5170,15 +5170,38 @@ class _Client:
     # --- search & graph ----------------------------------------------------------
     @_public('getter', label="Searching for “{query}” in {space}")
     def search(self, space, query, scopes=None, limit=None, mode=None,
-               enrich=True, **kw):
+               enrich=True, require=None, exclude=None, filter=None,
+               passages=None, max_data=None, **kw):
         """Index search; returns the `{hits, mode, vectorStatus}` envelope.
+
+        `query` is free text; inside it `"a phrase"` and a prefix `foo*`
+        work (the analyzer does not stem and has no fuzzy match: a prefix
+        is the recall tool). `mode`: "hybrid" (default), "fts", "vector",
+        or "title" (objects whose NAME matches the typed words, one hit
+        each, no scopes). `limit` default 10, max 100. Options, all
+        keyword:
+        `require` / `exclude` — lists of terms a hit must / must not
+        contain, in every mode (they narrow; the query text only ranks);
+        a term may be a "phrase", a prefix*, a "phrase pre"* or an
+        ^anchored clause. `filter` — keeps the hits
+        whose OBJECT matches a condition, the grammar of query_objects
+        (`{"any.type": "task"}`, `{"any.collections": "reading_list"}`,
+        `{"book.year": {"$gt": 1960}}`), applied while ranking: "the best
+        rows of this collection" is one call, not a post-filter. When it
+        reads more than the budget the reply sets `truncated`.
+        `passages` (0-10) adds up to that many further matching chunks per
+        hit on `hit["passages"]` (a missing `chunk` is chunk 0).
+        `max_data` bounds each hit's `data` to a
+        window of that many characters around the first match (-1 = the
+        whole chunk; `dataOffset` / `dataTotal` locate the window).
 
         Each hit is a matched RECORD, not a resolved object:
         `{uri (the link of the object that holds the record — what a
         reply links), data (the matched text), dataset (the
         collection), key (the store key inside it —
         `agent_memory_items`, `chat_messages`, …), objectId, recordId,
-        scope, score}`. With enrich=True
+        scope, score}`; a title hit also has `match` (its tier). With
+        enrich=True
         (default) every hit also gets `title`
         (the object's any.name) and `type` (its type's display name) —
         and prop-dataset hits gain `prop` ("book.author": which
@@ -5188,10 +5211,11 @@ class _Client:
         objectIds."""
         if kw:   # A18: the guessed types= kwarg gets a redirect, not a bare TypeError
             raise TypeError(
-                f"search() got unexpected keyword(s) {sorted(kw)} — search has "
-                "no type filter. List objects of a type with "
-                "query_objects(spaceConfig, filter={'any.type': '<xKey>'}), "
-                "or post-filter hits on h['type'].")
+                f"search() got unexpected keyword(s) {sorted(kw)} — the "
+                "options are scopes, limit, mode, require, exclude, "
+                "filter, passages, max_data, enrich. For a type or a "
+                "collection use filter={'any.type': '<xKey>'} or "
+                "filter={'any.collections': '<xKey>'}.")
         body = {"query": query}
         if scopes:
             body["scopes"] = scopes
@@ -5199,6 +5223,29 @@ class _Client:
             body["limit"] = limit
         if mode:
             body["mode"] = mode
+        for name, terms in (("require", require), ("exclude", exclude)):
+            if terms is None:
+                continue
+            if isinstance(terms, str):
+                terms = [terms]
+            if not (isinstance(terms, (list, tuple))
+                    and all(isinstance(t, str) for t in terms)):
+                raise ValueError(f"search: {name} is a list of strings")
+            if terms:
+                body[name] = list(terms)
+        if filter:
+            body["filter"] = self._resolve_filter(space, filter)
+            _guard_filter(body["filter"], _STAMP_KEYS,
+                          lambda k: self._prop_kind(space, k) == "datetime")
+        if passages is not None:
+            if not (isinstance(passages, int) and 0 <= passages <= 10):
+                raise ValueError("search: passages is an integer, 0 to 10")
+            if passages:
+                body["passages"] = passages
+        if max_data is not None:
+            if not isinstance(max_data, int):
+                raise ValueError("search: max_data is an integer (-1 = the whole chunk)")
+            body["maxData"] = max_data
         result = self._call("post", f"/v1/spaces/{space}/search", body)
         for h in result.get("hits") or []:
             if isinstance(h, dict) and isinstance(h.get("dataset"), str):
