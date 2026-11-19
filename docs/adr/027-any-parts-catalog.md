@@ -259,8 +259,8 @@ for creation order; `patch_property` refuses the pinned paths (`kind`,
 is deleted**: `archive_property`, `_is_archived`, the hidden-row
 filter in `list_properties` and the "archived in the UI" write warning
 go, with nothing in their place — removing a property is
-`delete_property` (superseded by the amendment of 2026-11-19 below:
-any@v1 follows any-ui's marker again, now `xFormat.anyui.archived`).
+`delete_property` (the amendment of 2026-11-19 below brings the
+hidden-row filter back, on `xFormat.anyui.archived`; the verb stays out).
 `list_properties` rows are
 `{handle, id, name, xKey, kind, scope, xFormat?, meta?, options?}`,
 sorted by `xFormat.pos`. A relation property is what feeds the link
@@ -280,9 +280,11 @@ read the key. any@v1 derives the active schema with the same predicate
 - normalized reads drop its values; `links` / `backlinks` drop the
   references that sit in it;
 - `list_properties(…, archived=True)` lists the archived definitions;
-- `archive_property(space, type_key, prop_key, restore=False)` is the
-  removal verb (the same leaf, set or unset), `delete_property` stays
-  the permanent tombstone and reaches an archived property too;
+- any@v1 only reads the marker: there is no archive or restore verb.
+  The marker is the app's quick-undo mechanism, not a removal the
+  agent offers. `delete_property` (the permanent tombstone, confirmed
+  with the user first) is the one removal verb and reaches an archived
+  property too;
 - `add_property` with no `xKey` steps past a handle an archived
   definition holds (`<xKey>_2`, any-ui's uniquifier) and returns the
   `xKey`; an explicit `xKey` an archived definition holds is refused;
@@ -377,7 +379,8 @@ routes. Every doc states the contract; none narrates the move.
    catalog, `description` on the client ensure body) — the plan
    § 2.9 ticket; anybao's join stands until then.
 2. ~~The archived-property convention~~ — closed by the §4 amendment
-   of 2026-11-19 (BOB-93): any@v1 follows any-ui's marker.
+   of 2026-11-19 (BOB-93): any@v1 reads any-ui's marker and never
+   writes it.
 3. Whether `bao/v1` should carry `miniapp` (bao in the sidebar) — a
    later ADR once the UI stops hiding the home space.
 

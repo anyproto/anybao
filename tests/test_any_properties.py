@@ -419,30 +419,20 @@ def test_an_archived_property_takes_no_write_and_the_error_says_why():
     fx = archived_rig()
     c = client(fx)
     for key in ("old", "Old", "pOLD"):
-        with pytest.raises(ValueError, match="removed in the app.*restore=True"):
+        with pytest.raises(ValueError, match="removed by the user in the app.*Undo in the app"):
             c.update_object("s1", "o1", {"task": {key: "v"}})
-    with pytest.raises(ValueError, match="removed in the app"):
+    with pytest.raises(ValueError, match="removed by the user in the app"):
         c.query_objects("s1", filter={"task.old": "v"})
-    with pytest.raises(ValueError, match="removed in the app"):
+    with pytest.raises(ValueError, match="removed by the user in the app"):
         c.patch_property("s1", "task", "old", set={"name": "New"})
     assert not [1 for v, _, _ in fx.calls if v not in ("GET", "POST")]
     assert not posts(fx, "/set/bafyTASK")
 
 
-def test_archive_property_writes_the_marker_and_restore_unsets_it():
-    fx = archived_rig()
-    c = client(fx)
-    assert c.archive_property("s1", "task", "Estimate") == {
-        "propId": "pEST", "archived": True}
-    assert c.archive_property("s1", "task", "old", restore=True) == {
-        "propId": "pOLD", "archived": False}
-    assert [(p.rsplit("/", 1)[-1], b) for v, p, b in fx.calls if v == "PATCH"] == [
-        ("pEST", {"set": {"xFormat.anyui.archived": True}}),
-        ("pOLD", {"unset": ["xFormat.anyui.archived"]})]
-    with pytest.raises(ValueError, match="is not archived"):
-        c.archive_property("s1", "task", "status", restore=True)
-    with pytest.raises(ValueError, match='no archived property "nope" — archived: "old"'):
-        c.archive_property("s1", "task", "nope", restore=True)
+def test_any_v1_never_writes_the_archive_marker():
+    g = load(wire())
+    assert "archive_property" not in g
+    assert "confirm with the user" in g["delete_property"].__doc__
 
 
 def test_add_property_steps_past_an_xkey_an_archived_property_holds():
@@ -557,7 +547,7 @@ def test_delete_type_and_delete_collection_wire_shapes():
 def test_flat_surface_exposes_the_new_tools_with_docs():
     g = load(wire())
     for name in ("patch_property", "set_option", "remove_option", "reorder_property",
-                 "delete_property", "archive_property", "delete_type", "delete_collection",
+                 "delete_property", "delete_type", "delete_collection",
                  "set_type", "add_to_collection",
                  "remove_from_collection", "trash", "restore", "list_collections",
                  "create_collection", "list_apps",

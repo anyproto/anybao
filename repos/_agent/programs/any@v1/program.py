@@ -569,11 +569,10 @@ def _slug(pdef):
 
 
 # any-ui's reversible removal (ADR-027 §4): "Delete property" in the app
-# sets this leaf to true and Undo unsets it — the definition, its id and
-# every stored value stay. The server does not read a vendor key, so each
-# client derives the active schema with this one predicate.
-_ARCHIVED_PATH = "xFormat.anyui.archived"
-
+# sets `xFormat.anyui.archived` to true and Undo unsets it — the
+# definition, its id and every stored value stay. The server does not read
+# a vendor key, so each client derives the active schema with this one
+# predicate. any@v1 only READS the marker: it never archives or restores.
 
 def _is_archived(pdef):
     bag = _xformat(pdef).get("anyui")
@@ -1023,10 +1022,10 @@ class _Client:
             return self._resolve_prop_seg(space, type_id, seg, True)
         if self._find_archived(space, type_id, seg) is not None:
             raise ValueError(
-                f'property "{seg}" was removed in the app (archived): it is '
-                "hidden from the user and takes no reads or writes. Its values "
-                "are kept — archive_property(space, <owner>, "
-                f'"{seg}", restore=True) brings it back; ask the user first. '
+                f'property "{seg}" was removed by the user in the app '
+                "(archived): it is hidden there and takes no reads or writes. "
+                "Only the user brings it back (Undo in the app); "
+                "list_properties(…, archived=True) shows it. "
                 f"Active properties: {self._prop_handles(space, type_id)}")
         return None
 
@@ -3613,7 +3612,7 @@ class _Client:
         — the server would answer a nonexistent id with a silent [].
         A property the user removed in the app (archived) is NOT listed and
         resolves nowhere; `archived=True` lists those instead (no `handle`;
-        `archive_property(…, restore=True)` brings one back)."""
+        only the user brings one back, `delete_property` removes it for good)."""
         tid = self._resolve_owner_or_raise(space, type_key)
         self._props_cache.pop((space, tid), None)   # a listing reads fresh
         rows = []
@@ -3878,7 +3877,7 @@ class _Client:
         `failed`, and then the old property STAYS as `<xKey>_old`
         so nothing is lost. It stays on the owner, so EVERY object
         keeps its old value under it, also the objects that
-        converted — fix the failed values and archive_property it.
+        converted — fix the failed values and delete_property it.
         `type_key` is the owner, a type or a collection. Not
         atomic: an edit of the old property on another device
         during the move is not copied, so do it while nobody edits
@@ -4051,7 +4050,7 @@ class _Client:
         convert is listed under `failed`, and the old property then
         stays as `<xKey>_old`, with the old value of EVERY object,
         also of the objects that converted). Nothing is ever removed: a property
-        that the list leaves out stays (archive_property removes one). Every key
+        that the list leaves out stays (delete_property). Every key
         and draft is checked before the first write. Options of a
         choice: set_option. Returns {"typeId", "xKey", "changed":
         [keys], "addedProps": {xKey: id}, "patchedProps": [xKey],
@@ -4440,9 +4439,7 @@ class _Client:
                 raise ValueError(
                     f'xKey "{body["xKey"]}" is held by a property the user '
                     "removed in the app (archived). Pass another xKey, or omit it "
-                    "and the name gives a free one; archive_property(space, "
-                    f'"{type_key}", "{body["xKey"]}", restore=True) brings the '
-                    "old property back with its values.")
+                    "and the name gives a free one.")
         else:
             stem = _slugify_xkey(body.get("name") or "")
             taken = held | {p.get("xKey") for p in self._type_props(space, tid)}
@@ -4646,44 +4643,15 @@ class _Client:
         self._props_cache.pop((space, tid), None)
         return {"order": [p["handle"] for p in rest]}
 
-    @_public('mutator', label="Removing the property {prop_key} of {type_key} in {space}")
-    def archive_property(self, space, type_key, prop_key, restore=False):
-        """Remove a property the way the app's "Delete property" does — reversible.
-
-        THE way to remove a property: the definition is marked archived, so the
-        app and every read here hide it and its values, and nothing is lost.
-        `restore=True` brings an archived property back, with its values and its
-        place in the order — also one the user removed in the app; name it by
-        xKey, name or id (`list_properties(…, archived=True)` shows them).
-        `type_key` is the owner — a type or a collection. Returns {"propId",
-        "archived"}."""
-        tid = self._resolve_owner_or_raise(space, type_key)
-        self._props_cache.pop((space, tid), None)
-        if restore:
-            p = self._find_archived(space, tid, prop_key)
-            if p is None:
-                if self._resolve_prop_seg(space, tid, prop_key):
-                    raise ValueError(f'property "{prop_key}" is not archived')
-                names = ", ".join(f'"{q.get("xKey") or q.get("name") or q.get("id")}"'
-                                  for q in self._archived_props(space, tid))
-                raise ValueError(f'no archived property "{prop_key}" — archived: '
-                                 f"{names or 'none'}")
-            pid, body = p["id"], {"unset": [_ARCHIVED_PATH]}
-        else:
-            pid = self._resolve_prop_or_raise(space, tid, prop_key)
-            body = {"set": {_ARCHIVED_PATH: True}}
-        self._call("patch", f"{self._props_path(space, tid)}/{pid}", body)
-        self._props_cache.pop((space, tid), None)
-        return {"propId": pid, "archived": not restore}
-
     @_public('mutator')
     def delete_property(self, space, type_key, prop_key):
-        """PERMANENTLY tombstone a property definition — almost never what is wanted.
+        """Remove a property — PERMANENT; confirm with the user first.
 
-        To remove a property use `archive_property` (reversible, what the app
-        does). This is the CRDT tombstone: the id never comes back, stored
-        values stay as orphans. Only on the user's explicit ask for a permanent
-        delete; an archived property is named by its id or xKey. `type_key` is
+        THE way to remove a property. A CRDT tombstone: the id never comes
+        back, stored values stay as orphans and nothing undoes it — so name the
+        property and what is lost, and get the user's yes, before every call.
+        Reaches a property the user removed in the app (archived) too, by its
+        xKey, name or id (`list_properties(…, archived=True)`). `type_key` is
         the owner — a type or a collection. Returns {}."""
         tid = self._resolve_owner_or_raise(space, type_key)
         self._props_cache.pop((space, tid), None)
