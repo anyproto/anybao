@@ -38,6 +38,12 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   the picture's any://f/ link; optional, but set an emoji when one
   fits the object. Re-tag with add_to_collection /
   remove_from_collection; change what an object is with c.set_type.
+- A property is a plain string unless you set `xFormat`. Pick it when
+  you add the property: c.add_property(s, type, {"name": "Release
+  URL", "xFormat": {"type": "url"}}). Slugs: text, longtext, url,
+  email, phone, choice, relation, date, number, checkbox and more —
+  help(c.add_property) lists all. Read it back with list_properties.
+  c.patch_property(…, set={"xFormat.type": …}) changes a slug later.
   Never edit any.type or any.collections by hand.
 - Queries: `c.query_objects(s, filter={"any.type": "book",
   "book.year": 1965})`, membership `{"any.collections":
