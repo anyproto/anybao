@@ -152,67 +152,55 @@ pub struct AgentStores {
 /// (ADR-027 §2): a client's type picker never offers them; the
 /// listing includes hidden rows, so the find never re-creates one.
 ///
-/// A type is a plain created object, not a bundle member, so two
-/// devices can each create one (ADR-017 §0, amended 2026-11-19):
-/// - several rows with the xKey: the OLDEST wins — (createdAt, id),
-///   the rule of `deploy::ensure_typed` — so every device converges
-///   on the type the anchors were derived with;
-/// - no row: create only when this device installed the bundle
-///   (`fresh_install`) or the space has synced. An adopted install
-///   whose types have not arrived yet is a retryable boot error, not
-///   a reason to create a second set.
-fn ensure_type(
-    c: &Client,
-    space: &str,
-    name: &str,
-    xkey: &str,
-    fresh_install: bool,
-) -> Result<String> {
-    let held: Vec<Value> = c
-        .list_types(space)?
-        .into_iter()
-        .filter(|t| t["xKey"] == xkey)
-        .collect();
-    let winner = match held.as_slice() {
-        [] => None,
-        [one] => Some(one),
-        many => {
-            let mut ranked = Vec::with_capacity(many.len());
-            for t in many {
-                let tid = t["id"].as_str().unwrap_or_default();
-                let created = c
-                    .get_object(space, tid)
-                    .with_context(|| format!("reading duplicate type {tid} ({xkey})"))?;
-                let at =
-                    crate::deploy::instant_ms(&created["record"]["createdAt"]).unwrap_or(i64::MIN);
-                ranked.push(((at, tid.to_string()), t));
+/// The id this returns is a CANDIDATE: a type is a plain created
+/// object, not a bundle member, so two devices can each create one
+/// and the listing then holds several. `anchored_type` settles which
+/// one a store uses (ADR-017 §0, amended 2026-11-19).
+fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
+    for t in c.list_types(space)? {
+        if t["xKey"] == xkey {
+            let tid = t["id"].as_str().unwrap_or_default().to_string();
+            if t["hidden"] != json!(true) {
+                c.patch_type(space, &tid, &json!({"hidden": true}))?;
             }
-            warn!(
-                "harness type {xkey}: {} types hold the xKey — the oldest wins",
-                many.len()
-            );
-            ranked.into_iter().min_by(|a, b| a.0.cmp(&b.0)).map(|r| r.1)
-        }
-    };
-    if let Some(t) = winner {
-        let tid = t["id"].as_str().unwrap_or_default().to_string();
-        if t["hidden"] != json!(true) {
-            c.patch_type(space, &tid, &json!({"hidden": true}))?;
-        }
-        return Ok(tid);
-    }
-    if !fresh_install {
-        let state = c.sync_status(space).context("space sync status")?;
-        if state["state"] != "synced" {
-            anyhow::bail!(
-                "harness type {xkey} is not on this device yet and the space is still syncing \
-                 (state {}) — not creating a second one; the next boot retries",
-                state["state"]
-            );
+            return Ok(tid);
         }
     }
     let created = c.create_type(space, &json!({"name": name, "xKey": xkey, "hidden": true}))?;
     Ok(created["typeId"].as_str().unwrap_or_default().to_string())
+}
+
+/// Derive one store anchor and return `(anchor, type)` — the type the
+/// anchor CARRIES, which is the only type whose parts can declare the
+/// anchor's collections (a write through any other is `400
+/// dataset.not_declared`). `candidate` types the anchor only when this
+/// call materializes it; on an anchor another device derived, the
+/// server ignores it, so the anchor is read back. A carried type that
+/// is not on this device yet is a retryable boot error.
+fn anchored_type(c: &Client, space: &str, seed: &str, candidate: &str) -> Result<(String, String)> {
+    let anchor = bundle_child_retry(c, space, "bao/v1", seed, candidate)?;
+    let object = c
+        .get_object(space, &anchor)
+        .with_context(|| format!("reading the {seed} anchor"))?;
+    let carried = match object["record"]["any"]["type"].as_str() {
+        Some(t) if !t.is_empty() && t != candidate => t.to_string(),
+        _ => return Ok((anchor, candidate.to_string())),
+    };
+    if !c
+        .list_types(space)?
+        .iter()
+        .any(|t| t["id"] == carried.as_str())
+    {
+        anyhow::bail!(
+            "the {seed} anchor carries type {carried}, which is not on this device yet \
+             (the space is still syncing) — the next boot retries"
+        );
+    }
+    warn!(
+        "store {seed}: several types hold the xKey — using {carried}, the one the anchor carries, \
+         not {candidate}"
+    );
+    Ok((anchor, carried))
 }
 
 /// The collection a type's dataset lives in, read off the datasets
@@ -335,15 +323,15 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     // The bundle: adopt-or-install, brief not_ready retry (same class
     // as the chat ensure).
     let mut last_err = None;
-    let mut registered = None;
+    let mut registered = false;
     for _ in 0..5 {
         // Created root on purpose: the bao space is single-account
         // (owner escape covers offline installs) and created stays the
         // default — a derived root could never be uninstalled. The root
         // is a plain document: type `page` (ADR-029 §7), filed nowhere.
         match c.ensure_bundle(space, "bao/v1", "bao", "page", &[], false) {
-            Ok(reply) => {
-                registered = Some(reply["installed"] == json!(true));
+            Ok(_) => {
+                registered = true;
                 break;
             }
             Err(e) if e.status == 409 => {
@@ -354,15 +342,20 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             Err(e) => return Err(e).context("bao/v1 bundle ensure"),
         }
     }
-    // `installed` = this device registered the root, so nothing older
-    // can be on its way; an adopted install waits for its types.
-    let Some(fresh) = registered else {
+    if !registered {
         return Err(last_err.unwrap()).context("bao/v1 bundle never became ready");
-    };
+    }
 
-    let cfg_t = ensure_type(c, space, "Agent Config", "agent_config", fresh)?;
-    let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets", fresh)?;
-    let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger", fresh)?;
+    // Candidates by xKey, then the anchors: each store takes the type
+    // its anchor carries, so the collection always matches the anchor
+    // whatever duplicates the listing holds.
+    let cfg_c = ensure_type(c, space, "Agent Config", "agent_config")?;
+    let sec_c = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
+    let trg_c = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    let (config, cfg_t) = anchored_type(c, space, "bao/config/v1", &cfg_c)?;
+    let (secrets, sec_t) = anchored_type(c, space, "bao/secrets/v1", &sec_c)?;
+    let (triggers, trg_t) = anchored_type(c, space, "bao/triggers/v1", &trg_c)?;
+    let (runs, runs_t) = anchored_type(c, space, "bao/runs/v1", &trg_c)?;
     // Declared fields carry behavior (a declared field needs a kind);
     // everything free-form rides the `dynamic` keyspace — undeclared
     // fields are any-typed and freely mutable. Config `value` is
@@ -429,17 +422,17 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     let runs_ds = ensure_dataset(
         c,
         space,
-        &trg_t,
+        &runs_t,
         &json!({
             "key": RUNS_KEY, "displayName": "Agent Runs",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
     let stores = AgentStores {
-        config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &cfg_t)?,
-        secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &sec_t)?,
-        triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &trg_t)?,
-        runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &trg_t)?,
+        config,
+        secrets,
+        triggers,
+        runs,
         config_ds,
         secrets_ds,
         triggers_ds,
@@ -4735,7 +4728,7 @@ mod tests {
             (204, json!({})),
         ]);
         assert_eq!(
-            ensure_type(&c, "s1", "Agent Config", "agent_config", true).unwrap(),
+            ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
             "t-cfg"
         );
         let calls = log.lock().unwrap();
@@ -4822,7 +4815,7 @@ mod tests {
             (201, json!({"typeId": "t-new"})),
         ]);
         assert_eq!(
-            ensure_type(&c, "s1", "Agent Config", "agent_config", true).unwrap(),
+            ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
             "t-new"
         );
         let calls = log.lock().unwrap();
@@ -4836,66 +4829,65 @@ mod tests {
     }
 
     #[test]
-    fn ensure_type_oldest_wins_among_duplicates() {
-        // a fresh data folder created a second type before the first
-        // one synced (2026-11-18): the listing order is by id, so the
-        // new type can come first — the creation stamp decides
+    fn a_store_takes_the_type_its_anchor_carries() {
+        // a device with a new data folder made a second trigger type
+        // before the first one synced (2026-11-18): the listing gives
+        // the new one first, the anchor still carries the old one
         let (c, log) = scripted(&[
+            (200, json!({"objectId": "anchor-trg"})),
+            (
+                200,
+                json!({"objectId": "anchor-trg", "record": {"any": {"type": "t-old"}}}),
+            ),
             (
                 200,
                 json!({"types": [
-                    {"id": "t-a-new", "xKey": "agent_trigger", "hidden": true},
-                    {"id": "t-b-old", "xKey": "agent_trigger", "hidden": true}]}),
-            ),
-            (
-                200,
-                json!({"objectId": "t-a-new", "record": {
-                    "createdAt": {"$date": "2026-11-18T07:54:47.000Z"}}}),
-            ),
-            (
-                200,
-                json!({"objectId": "t-b-old", "record": {
-                    "createdAt": {"$date": "2026-09-18T13:41:39.000Z"}}}),
+                    {"id": "t-new", "xKey": "agent_trigger", "hidden": true},
+                    {"id": "t-old", "xKey": "agent_trigger", "hidden": true}]}),
             ),
         ]);
         assert_eq!(
-            ensure_type(&c, "s1", "Agent Trigger", "agent_trigger", false).unwrap(),
-            "t-b-old"
+            anchored_type(&c, "s1", "bao/triggers/v1", "t-new").unwrap(),
+            ("anchor-trg".to_string(), "t-old".to_string())
         );
         let calls = log.lock().unwrap();
-        assert_eq!(calls.len(), 3, "no create, no patch");
-        assert_eq!(calls[1].1, "/v1/spaces/s1/objects/t-a-new");
+        assert_eq!(calls[0].2.as_ref().unwrap()["type"], json!("t-new"));
+        assert_eq!(calls[1].1, "/v1/spaces/s1/objects/anchor-trg");
     }
 
     #[test]
-    fn ensure_type_waits_for_an_adopted_install_that_has_not_synced() {
-        // the bundle was installed by another device and its types are
-        // not here yet: no create while the space still syncs
-        let (c, log) = scripted(&[
-            (200, json!({"types": []})),
-            (200, json!({"state": "syncing", "synced": 12, "total": 438})),
+    fn a_store_waits_for_an_anchor_type_that_has_not_synced() {
+        // the anchor arrived before the type it carries: no store is
+        // declared on the candidate, the boot retries
+        let (c, _log) = scripted(&[
+            (200, json!({"objectId": "anchor-cfg"})),
+            (
+                200,
+                json!({"objectId": "anchor-cfg", "record": {"any": {"type": "t-old"}}}),
+            ),
+            (
+                200,
+                json!({"types": [{"id": "t-new", "xKey": "agent_config", "hidden": true}]}),
+            ),
         ]);
-        let err = ensure_type(&c, "s1", "Agent Config", "agent_config", false).unwrap_err();
-        assert!(err.to_string().contains("still syncing"), "{err}");
-        let calls = log.lock().unwrap();
-        assert_eq!(calls.len(), 2, "no create");
-        assert_eq!(calls[1].1, "/v1/spaces/s1/sync-status");
+        let err = anchored_type(&c, "s1", "bao/config/v1", "t-new").unwrap_err();
+        assert!(err.to_string().contains("not on this device yet"), "{err}");
     }
 
     #[test]
-    fn ensure_type_creates_on_an_adopted_install_once_the_space_synced() {
-        // a synced space with no such type is a half-finished install:
-        // this device completes it
+    fn a_store_keeps_its_candidate_when_the_anchor_agrees() {
         let (c, log) = scripted(&[
-            (200, json!({"types": []})),
-            (200, json!({"state": "synced", "synced": 438, "total": 438})),
-            (201, json!({"typeId": "t-new"})),
+            (200, json!({"objectId": "anchor-cfg"})),
+            (
+                200,
+                json!({"objectId": "anchor-cfg", "record": {"any": {"type": "t-cfg"}}}),
+            ),
         ]);
         assert_eq!(
-            ensure_type(&c, "s1", "Agent Config", "agent_config", false).unwrap(),
-            "t-new"
+            anchored_type(&c, "s1", "bao/config/v1", "t-cfg").unwrap(),
+            ("anchor-cfg".to_string(), "t-cfg".to_string())
         );
-        assert_eq!(log.lock().unwrap().len(), 3);
+        assert_eq!(log.lock().unwrap().len(), 2, "no type listing");
     }
 
     #[test]
