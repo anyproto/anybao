@@ -44,6 +44,9 @@ c.update_object(s, obj_id, {"book": {"rating": 9}})
   email, phone, choice, relation, date, number, checkbox and more —
   help(c.add_property) lists all. Read it back with list_properties.
   c.patch_property(…, set={"xFormat.type": …}) changes a slug later.
+  Remove a property with c.archive_property(s, type, key) — what the
+  app's Delete does, reversible (restore=True). A property the user
+  removed in the app is not listed and takes no reads or writes.
   Never edit any.type or any.collections by hand.
 - Queries: `c.query_objects(s, filter={"any.type": "book",
   "book.year": 1965})`, membership `{"any.collections":
