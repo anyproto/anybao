@@ -5181,15 +5181,17 @@ class _Client:
         each, no scopes). `limit` default 10, max 100. Options, all
         keyword:
         `require` / `exclude` — lists of terms a hit must / must not
-        contain, in every mode; a term may be a "phrase", a prefix*, a
-        "phrase pre"* or an ^anchored clause. `filter` — keeps the hits
+        contain, in every mode (they narrow; the query text only ranks);
+        a term may be a "phrase", a prefix*, a "phrase pre"* or an
+        ^anchored clause. `filter` — keeps the hits
         whose OBJECT matches a condition, the grammar of query_objects
         (`{"any.type": "task"}`, `{"any.collections": "reading_list"}`,
         `{"book.year": {"$gt": 1960}}`), applied while ranking: "the best
         rows of this collection" is one call, not a post-filter. When it
         reads more than the budget the reply sets `truncated`.
         `passages` (0-10) adds up to that many further matching chunks per
-        hit on `hit["passages"]`; `max_data` bounds each hit's `data` to a
+        hit on `hit["passages"]` (a missing `chunk` is chunk 0).
+        `max_data` bounds each hit's `data` to a
         window of that many characters around the first match (-1 = the
         whole chunk; `dataOffset` / `dataTotal` locate the window).
 
