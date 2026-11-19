@@ -259,13 +259,42 @@ for creation order; `patch_property` refuses the pinned paths (`kind`,
 is deleted**: `archive_property`, `_is_archived`, the hidden-row
 filter in `list_properties` and the "archived in the UI" write warning
 go, with nothing in their place — removing a property is
-`delete_property`. Whether a soft-remove convention should exist at
-all, and where any-ui's `anyUiArchived` came from, is under
-investigation (Linear BOB-93, due 2026-09-09). `list_properties` rows are
+`delete_property` (the amendment of 2026-11-19 below brings the
+hidden-row filter back, on `xFormat.anyui.archived`; the verb stays out).
+`list_properties` rows are
 `{handle, id, name, xKey, kind, scope, xFormat?, meta?, options?}`,
 sorted by `xFormat.pos`. A relation property is what feeds the link
 index; a links property created before the descriptor move indexes
 nothing — it is left as it is (clean cut), the user re-creates it.
+
+**Amended 2026-11-19 (archived properties, BOB-93):** the soft-remove
+convention exists and it is any-ui's: "Delete property" in the app sets
+`xFormat.anyui.archived = true` on the definition and Undo unsets it;
+the definition, its id and every value stay, and the server does not
+read the key. any@v1 derives the active schema with the same predicate
+(the leaf is exactly `true`):
+
+- an archived property has no handle, is not in `list_properties`, and
+  no read, filter or write resolves it — a key that names one errors
+  with "removed in the app (archived)" and the restore call;
+- normalized reads drop its values; `links` / `backlinks` drop the
+  references that sit in it;
+- `list_properties(…, archived=True)` lists the archived definitions;
+- any@v1 never sets the marker: there is no archive verb. The marker
+  is the app's quick-undo mechanism, not a removal the agent offers.
+  `delete_property` (the permanent tombstone, confirmed with the user
+  first) is the one removal verb and reaches an archived property too;
+- `restore_property(space, type_key, prop_key)` unsets the marker, on
+  the user's ask — the definition returns with its id, values and
+  place, as Undo in the app does;
+- `add_property` with no `xKey` steps past a handle an archived
+  definition holds (`<xKey>_2`, any-ui's uniquifier) and returns the
+  `xKey`; an explicit `xKey` an archived definition holds is refused;
+- a `properties` draft of `create_type` / `patch_type` /
+  `create_collection` / `patch_collection` whose xKey an archived
+  definition holds does nothing — it neither restores nor reshapes it.
+
+Not covered: a search hit whose text sits in an archived property.
 
 ### 5. Links, discovery, and the apps a space has
 
@@ -351,8 +380,9 @@ routes. Every doc states the contract; none narrates the move.
 1. Descriptions on bundle roots (`any.description` stamped from the
    catalog, `description` on the client ensure body) — the plan
    § 2.9 ticket; anybao's join stands until then.
-2. The archived-property convention — BOB-93: origin, whether a
-   soft-remove should exist, and where; nothing in anybao until then.
+2. ~~The archived-property convention~~ — closed by the §4 amendment
+   of 2026-11-19 (BOB-93): any@v1 reads any-ui's marker, never
+   sets it, and unsets it on a restore.
 3. Whether `bao/v1` should carry `miniapp` (bao in the sidebar) — a
    later ADR once the UI stops hiding the home space.
 

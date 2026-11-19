@@ -378,9 +378,120 @@ def test_delete_property_and_set_type_wire_shapes():
     assert [(v, p.split("/s1/")[1], b) for v, p, b in fx.calls if v != "GET"] == [
         ("DELETE", "types/bafyTASK/properties/pEST", None),
         ("POST", "properties/o1/type/bafyTASK", None)]
-    # the archived-property marker is gone with any-ui's meta bag
+
+
+# --- properties archived in the app (ADR-027 §4, BOB-93) ---------------------
+# any-ui's "Delete property" sets xFormat.anyui.archived = true and keeps the
+# definition and the values. `Old` is one such property; a second archived
+# one, `Status (old)`, holds no xKey an active property has.
+
+_OLD = {"id": "pOLD", "name": "Old", "xKey": "old", "kind": "string",
+        "xFormat": {"type": "text", "pos": "a05", "anyui": {"archived": True}}}
+
+
+def archived_rig(records=(), extra_props=()):
+    props = {"properties": [*_PROPS["properties"], _OLD, *extra_props]}
+
+    def extra(verb, path, body, reply):
+        if verb == "GET" and path.endswith("/types/bafyTASK/properties"):
+            return props
+        return reply
+    return rig(records=records, extra=extra)
+
+
+def test_an_archived_property_is_not_listed_and_its_value_is_not_read():
+    rec = {"id": "o1", "any": {"name": "A", "type": "bafyTASK"},
+           "bafyTASK": {"pOLD": "x", "pNOTE": "kept"}}
+    fx = archived_rig(records=[rec])
+    c = client(fx)
+    assert "pOLD" not in {r["id"] for r in c.list_properties("s1", "task")}
+    gone = c.list_properties("s1", "task", archived=True)
+    assert [(r["id"], r["xKey"]) for r in gone] == [("pOLD", "old")]
+    assert "handle" not in gone[0]
+    out = c.query_objects("s1", filter={"any.type": "task"})
+    assert out[0]["task"] == {"note": "kept"}
+    # only the vendor leaf counts: another anyui flag leaves a property active
+    assert not load(wire())["_is_archived"](
+        {"xFormat": {"anyui": {"headerVisibility": "alwaysHide"}}})
+
+
+def test_an_archived_property_takes_no_write_and_the_error_says_why():
+    fx = archived_rig()
+    c = client(fx)
+    for key in ("old", "Old", "pOLD"):
+        with pytest.raises(ValueError, match="removed by the user in the app.*restore_property"):
+            c.update_object("s1", "o1", {"task": {key: "v"}})
+    with pytest.raises(ValueError, match="removed by the user in the app"):
+        c.query_objects("s1", filter={"task.old": "v"})
+    with pytest.raises(ValueError, match="removed by the user in the app"):
+        c.patch_property("s1", "task", "old", set={"name": "New"})
+    assert not [1 for v, _, _ in fx.calls if v not in ("GET", "POST")]
+    assert not posts(fx, "/set/bafyTASK")
+
+
+def test_restore_property_unsets_the_marker_and_nothing_sets_it():
+    fx = archived_rig()
+    c = client(fx)
+    assert c.restore_property("s1", "task", "Old") == {"propId": "pOLD", "xKey": "old"}
+    assert [(p.rsplit("/", 1)[-1], b) for v, p, b in fx.calls if v == "PATCH"] == [
+        ("pOLD", {"unset": ["xFormat.anyui.archived"]})]
+    with pytest.raises(ValueError, match="is not archived"):
+        c.restore_property("s1", "task", "status")
+    with pytest.raises(ValueError, match='no archived property "nope" — archived: "old"'):
+        c.restore_property("s1", "task", "nope")
     g = load(wire())
     assert "archive_property" not in g
+    assert "confirm with the user" in g["delete_property"].__doc__
+
+
+def test_add_property_steps_past_an_xkey_an_archived_property_holds():
+    held2 = {**_OLD, "id": "pOLD2", "xKey": "old_2"}
+    fx = archived_rig(extra_props=[{k: v for k, v in held2.items() if k != "xFormat"}])
+    c = client(fx)
+    # `old` is archived, `old_2` is active → the name gives `old_3`
+    r = c.add_property("s1", "task", {"name": "Old"})
+    assert r == {"propId": "pNEW", "xKey": "old_3"}
+    assert posts(fx, "/properties")[0][2]["xKey"] == "old_3"
+    # an active xKey is not stepped past: the server answers that one
+    assert c.add_property("s1", "task", {"name": "Note"})["xKey"] == "note"
+    with pytest.raises(ValueError, match='xKey "old" is held by a property the user'):
+        c.add_property("s1", "task", {"name": "Legacy", "xKey": "old"})
+
+
+def test_a_type_draft_neither_restores_nor_reshapes_an_archived_property():
+    fx = archived_rig()
+    c = client(fx)
+    r = c.patch_type("s1", "task", {"properties": [
+        {"name": "Renamed", "xKey": "old"},
+        {"name": "Old as number", "xKey": "old", "kind": "number"}]})
+    assert r["addedProps"] == {} and r["patchedProps"] == [] and r["kindChanges"] == []
+    assert not [1 for v, p, _ in fx.calls if v != "GET" and "/properties" in p]
+
+
+def test_delete_property_reaches_an_archived_property():
+    fx = archived_rig()
+    client(fx).delete_property("s1", "task", "old")
+    assert [(v, p.rsplit("/", 1)[-1]) for v, p, _ in fx.calls if v == "DELETE"] == [
+        ("DELETE", "pOLD")]
+
+
+def test_links_through_an_archived_property_are_dropped():
+    def edge(pid):
+        return {"kind": "link", "target": {"uri": "any://o/s1/t"},
+                "source": {"objectId": "o1", "dataset": "prop",
+                           "ownerId": "bafyTASK", "recordId": pid}}
+    props = {"properties": [*_PROPS["properties"], _OLD]}
+
+    def extra(verb, path, body, reply):
+        if verb == "GET" and path.endswith("/types/bafyTASK/properties"):
+            return props
+        if "/links" in path or "/backlinks" in path:
+            return {"links": [edge("pOLD"), edge("pREL")],
+                    "object": [edge("pOLD"), edge("pREL")], "parts": []}
+        return reply
+    c = client(rig(extra=extra))
+    assert [e["prop"] for e in c.links("s1", "o1")] == ["task.related"]
+    assert [e["prop"] for e in c.backlinks("s1", "o1")["object"]] == ["task.related"]
 
 
 def test_reorder_property_re_expresses_positions():
@@ -445,7 +556,7 @@ def test_delete_type_and_delete_collection_wire_shapes():
 def test_flat_surface_exposes_the_new_tools_with_docs():
     g = load(wire())
     for name in ("patch_property", "set_option", "remove_option", "reorder_property",
-                 "delete_property", "delete_type", "delete_collection",
+                 "delete_property", "restore_property", "delete_type", "delete_collection",
                  "set_type", "add_to_collection",
                  "remove_from_collection", "trash", "restore", "list_collections",
                  "create_collection", "list_apps",

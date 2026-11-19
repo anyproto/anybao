@@ -568,6 +568,17 @@ def _slug(pdef):
     return _xformat(pdef).get("type")
 
 
+# any-ui's reversible removal (ADR-027 §4): "Delete property" in the app
+# sets `xFormat.anyui.archived` to true and Undo unsets it — the
+# definition, its id and every stored value stay. The server does not read
+# a vendor key, so each client derives the active schema with this one
+# predicate. any@v1 never SETS the marker; `restore_property` unsets it.
+
+def _is_archived(pdef):
+    bag = _xformat(pdef).get("anyui")
+    return isinstance(bag, dict) and bag.get("archived") is True
+
+
 def _multiple(pdef):
     return bool((_xformat(pdef).get("config") or {}).get("multiple"))
 
@@ -911,17 +922,43 @@ class _Client:
         route = "collections" if self._def_kind(space, owner_id) == "collection" else "types"
         return f"/v1/spaces/{space}/{route}/{owner_id}/properties"
 
-    def _type_props(self, space, owner_id):
-        """The property definitions of an owner — a type or a collection."""
+    def _props_split(self, space, owner_id):
         self._check_space(space)
         key = (space, owner_id)
-        props = self._props_cache.get(key)
-        if props is None:
-            props = _assign_handles([dict(p) for p in
-                                     self._fetch_props(space, owner_id)
-                                     if isinstance(p, dict)])
-            self._props_cache[key] = props
-        return props
+        split = self._props_cache.get(key)
+        if split is None:
+            rows = [dict(p) for p in self._fetch_props(space, owner_id)
+                    if isinstance(p, dict)]
+            split = (_assign_handles([p for p in rows if not _is_archived(p)]),
+                     [p for p in rows if _is_archived(p)])
+            self._props_cache[key] = split
+        return split
+
+    def _type_props(self, space, owner_id):
+        """The ACTIVE property definitions of an owner — a type or a
+        collection. One archived in the app (`_is_archived`) is not
+        among them: it has no handle, is not listed, and no read or
+        write resolves it (ADR-027 §4)."""
+        return self._props_split(space, owner_id)[0]
+
+    def _archived_props(self, space, owner_id):
+        """The definitions the app archived — raw rows, no handles."""
+        return self._props_split(space, owner_id)[1]
+
+    def _find_archived(self, space, owner_id, seg):
+        """The archived definition `seg` names (id, xKey or name), or
+        None; more than one match errors with the ids."""
+        rows = self._archived_props(space, owner_id)
+        for field in ("id", "xKey", "name"):
+            hits = [p for p in rows if seg and p.get(field) == seg]
+            if len(hits) == 1:
+                return hits[0]
+            if len(hits) > 1:
+                raise ValueError(
+                    f'"{seg}" names {len(hits)} archived properties by {field}: '
+                    + ", ".join(f'{p.get("name")} (id {p.get("id")})' for p in hits)
+                    + ". Use the id.")
+        return None
 
     def _prop_def(self, space, type_id, prop_id):
         return next((p for p in self._type_props(space, type_id)
@@ -983,6 +1020,14 @@ class _Client:
         if not _retried:
             self._cat_invalidate(space)
             return self._resolve_prop_seg(space, type_id, seg, True)
+        if self._find_archived(space, type_id, seg) is not None:
+            raise ValueError(
+                f'property "{seg}" was removed by the user in the app '
+                "(archived): it is hidden there and takes no reads or writes. "
+                "restore_property(space, <owner>, "
+                f'"{seg}") brings it back with its values — only on the '
+                "user's ask. "
+                f"Active properties: {self._prop_handles(space, type_id)}")
         return None
 
     # --- dataset keys -> collections (ADR-027 §2) ----------------------------
@@ -1713,8 +1758,11 @@ class _Client:
                 continue
             defs = {p["id"]: p for p in self._type_props(space, k)
                     if p.get("id")}
+            gone = {p.get("id") for p in self._archived_props(space, k)}
             grp = {}
             for pk, pv in v.items():
+                if pk in gone:
+                    continue   # archived in the app: the UI hides the value
                 pdef = defs.get(pk)
                 if pdef is None:
                     grp[pk] = pv
@@ -3539,7 +3587,7 @@ class _Client:
         return self._call("get", f"/v1/spaces/{space}/collections/{cid}")
 
     @_public('getter', label="Reading the properties of {type_key} in {space}")
-    def list_properties(self, space, type_key):
+    def list_properties(self, space, type_key, archived=False):
         """A type's or collection's property definitions, in display order.
 
         [{handle, id, name, xKey, kind, scope, xFormat?, options?, meta?}].
@@ -3562,11 +3610,16 @@ class _Client:
         write/sync class (local-scope props exist only per-peer).
         `type_key` is the owner's xKey — a type's or a collection's
         (builtins: xKey == id); an unknown key ERRORS with the catalog
-        — the server would answer a nonexistent id with a silent []."""
+        — the server would answer a nonexistent id with a silent [].
+        A property the user removed in the app (archived) is NOT listed and
+        resolves nowhere; `archived=True` lists those instead (no `handle`;
+        `restore_property` brings one back, `delete_property` removes it for
+        good)."""
         tid = self._resolve_owner_or_raise(space, type_key)
         self._props_cache.pop((space, tid), None)   # a listing reads fresh
         rows = []
-        for p in sorted(self._type_props(space, tid), key=_prop_sort_key):
+        src = (self._archived_props if archived else self._type_props)(space, tid)
+        for p in sorted(src, key=_prop_sort_key):
             row = dict(p)
             if _options_of(p):
                 row["options"] = [{k: o[k] for k in ("key", "name", "color")}
@@ -3632,6 +3685,9 @@ class _Client:
         return row
 
     def _add_missing_props(self, space, owner_id, props):
+        # A draft whose xKey an ARCHIVED definition holds is skipped like
+        # an existing one: the user removed that property in the app, and a
+        # repeated ensure must neither restore it nor mint a twin each run.
         added = {}
         if props:
             have = {p.get("xKey") for p in self._fetch_props(space, owner_id)}
@@ -3782,6 +3838,8 @@ class _Client:
             if cur is None:
                 missing.append(p)
                 continue
+            if _is_archived(cur):
+                continue   # removed in the app: no draft reshapes it
             slug = (p.get("xFormat") or {}).get("type")
             want = p.get("kind") or (_KIND_OF_SLUG.get(slug, "string") if slug else None)
             if want and cur.get("kind") and want != cur["kind"]:
@@ -4370,9 +4428,31 @@ class _Client:
         search scope, or "none"). `scope` ∈ synced (default) | account | local —
         pinned like kind. The property is appended to the owner's display order
         (xFormat.pos). `type_key` names a type OR a collection (a column on a
-        supertag). Returns {"propId"}."""
+        supertag). Returns {"propId", "xKey"}. When a property the user removed
+        in the app (archived) still holds the xKey of the name, the new one
+        takes `<xKey>_2` — use the returned xKey; an explicit `xKey` an
+        archived property holds is refused."""
         tid = self._resolve_owner_or_raise(space, type_key)
-        return self._post_property(space, tid, body)
+        body = dict(body or {})
+        self._props_cache.pop((space, tid), None)
+        held = {p.get("xKey") for p in self._archived_props(space, tid)}
+        if body.get("xKey"):
+            if body["xKey"] in held:
+                raise ValueError(
+                    f'xKey "{body["xKey"]}" is held by a property the user '
+                    "removed in the app (archived). Pass another xKey, or omit it "
+                    "and the name gives a free one; restore_property brings the "
+                    "old one back, on the user's ask.")
+        else:
+            stem = _slugify_xkey(body.get("name") or "")
+            taken = held | {p.get("xKey") for p in self._type_props(space, tid)}
+            xkey, n = stem, 1
+            while stem in held and xkey in taken:   # any-ui's uniquifier
+                n += 1
+                xkey = f"{stem}_{n}"
+            body["xKey"] = xkey
+        res = self._post_property(space, tid, body)
+        return {**res, "xKey": body["xKey"]} if isinstance(res, dict) else res
 
     def _post_property(self, space, type_id, body):
         body = dict(body or {})
@@ -4415,7 +4495,8 @@ class _Client:
             fmt["relation"] = {**rel, "filter": json.dumps(rel["filter"])}
         if "pos" not in fmt:   # appended to the type's display order
             last = max([_xformat(p).get("pos") or ""
-                        for p in self._type_props(space, type_id)] or [""])
+                        for p in (*self._type_props(space, type_id),
+                                  *self._archived_props(space, type_id))] or [""])
             fmt["pos"] = _lexid_after(last)
         body["xFormat"] = fmt
         meta = body.get("meta")
@@ -4565,15 +4646,46 @@ class _Client:
         self._props_cache.pop((space, tid), None)
         return {"order": [p["handle"] for p in rest]}
 
+    @_public('mutator', label="Restoring the property {prop_key} of {type_key} in {space}")
+    def restore_property(self, space, type_key, prop_key):
+        """Bring back a property the user removed in the app (archived).
+
+        The definition returns with its id, its values and its place in the
+        order — what Undo in the app does. `prop_key` is the xKey, the name or
+        the id (`list_properties(…, archived=True)` shows the archived ones).
+        Only on the user's ask: they removed it. There is no opposite verb —
+        removal is `delete_property`. `type_key` is the owner — a type or a
+        collection. Returns {"propId", "xKey"}."""
+        tid = self._resolve_owner_or_raise(space, type_key)
+        self._props_cache.pop((space, tid), None)
+        p = self._find_archived(space, tid, prop_key)
+        if p is None:
+            if any(prop_key in (q.get("id"), q.get("handle"), q.get("name"), q.get("xKey"))
+                   for q in self._type_props(space, tid)):
+                raise ValueError(f'property "{prop_key}" is not archived — it is active')
+            names = ", ".join(f'"{q.get("xKey") or q.get("name") or q.get("id")}"'
+                              for q in self._archived_props(space, tid))
+            raise ValueError(f'no archived property "{prop_key}" — archived: '
+                             f"{names or 'none'}")
+        self._call("patch", f"{self._props_path(space, tid)}/{p['id']}",
+                   {"unset": ["xFormat.anyui.archived"]})
+        self._props_cache.pop((space, tid), None)
+        return {"propId": p["id"], "xKey": p.get("xKey")}
+
     @_public('mutator')
     def delete_property(self, space, type_key, prop_key):
-        """PERMANENTLY tombstone a property definition — confirm with the user first.
+        """Remove a property — PERMANENT; confirm with the user first.
 
-        (CRDT — the id never comes back; stored values stay as orphans). Confirm
-        with the user first. `type_key` is the owner — a type or a collection.
-        Returns {}."""
+        THE way to remove a property. A CRDT tombstone: the id never comes
+        back, stored values stay as orphans and nothing undoes it — so name the
+        property and what is lost, and get the user's yes, before every call.
+        Reaches a property the user removed in the app (archived) too, by its
+        xKey, name or id (`list_properties(…, archived=True)`). `type_key` is
+        the owner — a type or a collection. Returns {}."""
         tid = self._resolve_owner_or_raise(space, type_key)
-        pid = self._resolve_prop_or_raise(space, tid, prop_key)
+        self._props_cache.pop((space, tid), None)
+        gone = self._find_archived(space, tid, prop_key)
+        pid = gone["id"] if gone else self._resolve_prop_or_raise(space, tid, prop_key)
         self._call("delete", f"{self._props_path(space, tid)}/{pid}")
         self._props_cache.pop((space, tid), None)
         return {}
@@ -5328,6 +5440,21 @@ class _Client:
                                      f'{p.get("xKey") or p.get("name") or rid}')
                         break
 
+    def _edges(self, space, rows):
+        """`_edge` over a list, less the references that sit in a
+        property archived in the app — the user no longer sees them."""
+        out = []
+        for e in rows or []:
+            src = e.get("source") or {}
+            tid = src.get("ownerId") or src.get("typeId")
+            if (src.get("dataset") == "prop" and tid
+                    and tid in self._catalog(space)["by_id"]
+                    and any(p.get("id") == src.get("recordId")
+                            for p in self._archived_props(space, tid))):
+                continue
+            out.append(self._edge(space, e))
+        return out
+
     def _edge(self, space, e):
         """One link-index edge → `{uri, objectId, dataset?, key?,
         recordId?, kind, type?, prop?, spaceId?, target}`: the link of
@@ -5372,8 +5499,8 @@ class _Client:
         catches up a few hundred ms after a write. 409 index.disabled when the
         search index is off."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/backlinks")
-        out = {"object": [self._edge(space, e) for e in r.get("object") or []],
-               "parts": [self._edge(space, e) for e in r.get("parts") or []]}
+        out = {"object": self._edges(space, r.get("object")),
+               "parts": self._edges(space, r.get("parts"))}
         if r.get("truncated"):
             out["truncated"] = True
         return out
@@ -5385,7 +5512,7 @@ class _Client:
         The forward edges out of its blocks, messages, records and relation
         values → [edge] (the backlinks edge shape; `objectId` is this object)."""
         r = self._call("get", f"/v1/spaces/{space}/objects/{object_id}/links")
-        return [self._edge(space, e) for e in r.get("links") or []]
+        return self._edges(space, r.get("links"))
 
     @_public('getter', scoped=False)
     def backlinks_everywhere(self, target_uri, object_id=None):
@@ -5409,8 +5536,8 @@ class _Client:
         for sp in r.get("spaces") or []:
             sid = sp.get("spaceId") or ""
             out.append({"spaceId": sid,
-                        "object": [self._edge(sid, e) for e in sp.get("object") or []],
-                        "parts": [self._edge(sid, e) for e in sp.get("parts") or []]})
+                        "object": self._edges(sid, sp.get("object")),
+                        "parts": self._edges(sid, sp.get("parts"))})
         return out
 
     # --- apps: the sidebar, the registry, the catalog (ADR-027 §5) ------------
