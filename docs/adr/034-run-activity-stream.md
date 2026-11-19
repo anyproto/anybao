@@ -3,7 +3,8 @@
 Status: **Accepted** (2026-10-23); amended 2026-11-12 with the runtime
 implementation (owner): steps are sent at begin and at end (§2), the
 cell's code, turn and digest reach the host on the cell span (§1), the
-poster does the coalescing (§4). Renumbered from 033.
+poster does the coalescing (§4); amended 2026-11-19: backfill is the
+direct read of `trace_records`, same device (Decided). Renumbered from 033.
 Date: 2026-10-23
 Amends (when accepted): ADR-001 §4d (`meta.label` beside `meta.kind`
 on the span end record), ADR-003 §4b (`@span(label=…)`), ADR-010 §4
@@ -408,6 +409,13 @@ same rule as every other family on the bus.
   window opened mid-run starts at the next frame. Reading
   `trace_records` for the history (directly, or through an ADR-032
   request to serve) is its own task after this one ships.
+  **Decided 2026-11-19 (owner, BOB-243): the direct read, same device
+  only.** The client queries `trace_records` by run id through the
+  local store API of its own server (ADR-023 §5) and builds the cells
+  and steps from the span records. It finds the run of a message by
+  the bubble's `agent.debugLink`, which every bubble now carries
+  (ADR-005 §3). A run that another device answered shows its synced
+  summary and no code. History from another device stays open.
 
 - **The label lives on the method.** `@span(label=…)`, §3 layer 2.
   Not a host-side table.

@@ -225,8 +225,10 @@ def test_done_turn_posts_reply_and_persists_turn():
     w = World([done_reply("hello")])
     out = run(w)
     assert out["stop"] == "done" and out["replies"] == ["hello"]
+    # the bubble names its run (ADR-005 §3)
     assert w.chat_posts[-1] == {"text": "hello",
-                                "agent": {"name": "bao", "done": True}}
+                                "agent": {"name": "bao", "done": True,
+                                          "debugLink": "run_x"}}
     turn = w.turns[0]
     assert turn["userText"] == "go" and turn["traceRef"] == "run_x"
     # the LLMStats keys + prompt provenance (ADR-005 §5; `llm` is an
@@ -521,7 +523,16 @@ def test_progress_bubbles_for_interim_text():
               cells=[{"ok": True, "prints": [], "last": None, "error": None}])
     run(w)
     assert {"text": "working on it",
-            "agent": {"name": "bao", "done": False}} in w.chat_posts
+            "agent": {"name": "bao", "done": False,
+                      "debugLink": "run_x"}} in w.chat_posts
+
+
+def test_a_run_without_a_trace_ref_posts_no_debug_link():
+    # `anyrt run` of the program by hand passes no traceRef
+    w = World([done_reply("hello")])
+    run(w, traceRef="")
+    assert w.chat_posts[-1] == {"text": "hello",
+                                "agent": {"name": "bao", "done": True}}
 
 
 def test_unknown_stop_reason_raises():
