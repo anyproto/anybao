@@ -151,14 +151,64 @@ pub struct AgentStores {
 /// Find-or-create a harness type by xKey. Harness types are HIDDEN
 /// (ADR-027 §2): a client's type picker never offers them; the
 /// listing includes hidden rows, so the find never re-creates one.
-fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
-    for t in c.list_types(space)? {
-        if t["xKey"] == xkey {
-            let tid = t["id"].as_str().unwrap_or_default().to_string();
-            if t["hidden"] != json!(true) {
-                c.patch_type(space, &tid, &json!({"hidden": true}))?;
+///
+/// A type is a plain created object, not a bundle member, so two
+/// devices can each create one (ADR-017 §0, amended 2026-11-19):
+/// - several rows with the xKey: the OLDEST wins — (createdAt, id),
+///   the rule of `deploy::ensure_typed` — so every device converges
+///   on the type the anchors were derived with;
+/// - no row: create only when this device installed the bundle
+///   (`fresh_install`) or the space has synced. An adopted install
+///   whose types have not arrived yet is a retryable boot error, not
+///   a reason to create a second set.
+fn ensure_type(
+    c: &Client,
+    space: &str,
+    name: &str,
+    xkey: &str,
+    fresh_install: bool,
+) -> Result<String> {
+    let held: Vec<Value> = c
+        .list_types(space)?
+        .into_iter()
+        .filter(|t| t["xKey"] == xkey)
+        .collect();
+    let winner = match held.as_slice() {
+        [] => None,
+        [one] => Some(one),
+        many => {
+            let mut ranked = Vec::with_capacity(many.len());
+            for t in many {
+                let tid = t["id"].as_str().unwrap_or_default();
+                let created = c
+                    .get_object(space, tid)
+                    .with_context(|| format!("reading duplicate type {tid} ({xkey})"))?;
+                let at =
+                    crate::deploy::instant_ms(&created["record"]["createdAt"]).unwrap_or(i64::MIN);
+                ranked.push(((at, tid.to_string()), t));
             }
-            return Ok(tid);
+            warn!(
+                "harness type {xkey}: {} types hold the xKey — the oldest wins",
+                many.len()
+            );
+            ranked.into_iter().min_by(|a, b| a.0.cmp(&b.0)).map(|r| r.1)
+        }
+    };
+    if let Some(t) = winner {
+        let tid = t["id"].as_str().unwrap_or_default().to_string();
+        if t["hidden"] != json!(true) {
+            c.patch_type(space, &tid, &json!({"hidden": true}))?;
+        }
+        return Ok(tid);
+    }
+    if !fresh_install {
+        let state = c.sync_status(space).context("space sync status")?;
+        if state["state"] != "synced" {
+            anyhow::bail!(
+                "harness type {xkey} is not on this device yet and the space is still syncing \
+                 (state {}) — not creating a second one; the next boot retries",
+                state["state"]
+            );
         }
     }
     let created = c.create_type(space, &json!({"name": name, "xKey": xkey, "hidden": true}))?;
@@ -285,15 +335,15 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     // The bundle: adopt-or-install, brief not_ready retry (same class
     // as the chat ensure).
     let mut last_err = None;
-    let mut registered = false;
+    let mut registered = None;
     for _ in 0..5 {
         // Created root on purpose: the bao space is single-account
         // (owner escape covers offline installs) and created stays the
         // default — a derived root could never be uninstalled. The root
         // is a plain document: type `page` (ADR-029 §7), filed nowhere.
         match c.ensure_bundle(space, "bao/v1", "bao", "page", &[], false) {
-            Ok(_) => {
-                registered = true;
+            Ok(reply) => {
+                registered = Some(reply["installed"] == json!(true));
                 break;
             }
             Err(e) if e.status == 409 => {
@@ -304,13 +354,15 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
             Err(e) => return Err(e).context("bao/v1 bundle ensure"),
         }
     }
-    if !registered {
+    // `installed` = this device registered the root, so nothing older
+    // can be on its way; an adopted install waits for its types.
+    let Some(fresh) = registered else {
         return Err(last_err.unwrap()).context("bao/v1 bundle never became ready");
-    }
+    };
 
-    let cfg_t = ensure_type(c, space, "Agent Config", "agent_config")?;
-    let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
-    let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    let cfg_t = ensure_type(c, space, "Agent Config", "agent_config", fresh)?;
+    let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets", fresh)?;
+    let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger", fresh)?;
     // Declared fields carry behavior (a declared field needs a kind);
     // everything free-form rides the `dynamic` keyspace — undeclared
     // fields are any-typed and freely mutable. Config `value` is
@@ -4683,7 +4735,7 @@ mod tests {
             (204, json!({})),
         ]);
         assert_eq!(
-            ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
+            ensure_type(&c, "s1", "Agent Config", "agent_config", true).unwrap(),
             "t-cfg"
         );
         let calls = log.lock().unwrap();
@@ -4770,7 +4822,7 @@ mod tests {
             (201, json!({"typeId": "t-new"})),
         ]);
         assert_eq!(
-            ensure_type(&c, "s1", "Agent Config", "agent_config").unwrap(),
+            ensure_type(&c, "s1", "Agent Config", "agent_config", true).unwrap(),
             "t-new"
         );
         let calls = log.lock().unwrap();
@@ -4781,6 +4833,69 @@ mod tests {
             calls[1].2,
             Some(json!({"name": "Agent Config", "xKey": "agent_config", "hidden": true}))
         );
+    }
+
+    #[test]
+    fn ensure_type_oldest_wins_among_duplicates() {
+        // a fresh data folder created a second type before the first
+        // one synced (2026-11-18): the listing order is by id, so the
+        // new type can come first — the creation stamp decides
+        let (c, log) = scripted(&[
+            (
+                200,
+                json!({"types": [
+                    {"id": "t-a-new", "xKey": "agent_trigger", "hidden": true},
+                    {"id": "t-b-old", "xKey": "agent_trigger", "hidden": true}]}),
+            ),
+            (
+                200,
+                json!({"objectId": "t-a-new", "record": {
+                    "createdAt": {"$date": "2026-11-18T07:54:47.000Z"}}}),
+            ),
+            (
+                200,
+                json!({"objectId": "t-b-old", "record": {
+                    "createdAt": {"$date": "2026-09-18T13:41:39.000Z"}}}),
+            ),
+        ]);
+        assert_eq!(
+            ensure_type(&c, "s1", "Agent Trigger", "agent_trigger", false).unwrap(),
+            "t-b-old"
+        );
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 3, "no create, no patch");
+        assert_eq!(calls[1].1, "/v1/spaces/s1/objects/t-a-new");
+    }
+
+    #[test]
+    fn ensure_type_waits_for_an_adopted_install_that_has_not_synced() {
+        // the bundle was installed by another device and its types are
+        // not here yet: no create while the space still syncs
+        let (c, log) = scripted(&[
+            (200, json!({"types": []})),
+            (200, json!({"state": "syncing", "synced": 12, "total": 438})),
+        ]);
+        let err = ensure_type(&c, "s1", "Agent Config", "agent_config", false).unwrap_err();
+        assert!(err.to_string().contains("still syncing"), "{err}");
+        let calls = log.lock().unwrap();
+        assert_eq!(calls.len(), 2, "no create");
+        assert_eq!(calls[1].1, "/v1/spaces/s1/sync-status");
+    }
+
+    #[test]
+    fn ensure_type_creates_on_an_adopted_install_once_the_space_synced() {
+        // a synced space with no such type is a half-finished install:
+        // this device completes it
+        let (c, log) = scripted(&[
+            (200, json!({"types": []})),
+            (200, json!({"state": "synced", "synced": 438, "total": 438})),
+            (201, json!({"typeId": "t-new"})),
+        ]);
+        assert_eq!(
+            ensure_type(&c, "s1", "Agent Config", "agent_config", false).unwrap(),
+            "t-new"
+        );
+        assert_eq!(log.lock().unwrap().len(), 3);
     }
 
     #[test]

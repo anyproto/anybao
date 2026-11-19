@@ -788,6 +788,25 @@ impl Client {
         )
     }
 
+    /// GET /v1/spaces/{s}/objects/{id} — one object, `{objectId,
+    /// record}`; the record carries the server stamps (`createdAt`,
+    /// `author`). A type is an object too: this is where its creation
+    /// instant is read.
+    pub fn get_object(&self, space_id: &str, object_id: &str) -> Result<Value, AnyError> {
+        self.call(
+            "GET",
+            &format!("/v1/spaces/{space_id}/objects/{object_id}"),
+            None,
+        )
+    }
+
+    /// GET /v1/spaces/{s}/sync-status — the space's convergence on
+    /// this device, `{state, synced, total, …}`; `state: "synced"`
+    /// once every known tree is local.
+    pub fn sync_status(&self, space_id: &str) -> Result<Value, AnyError> {
+        self.call("GET", &format!("/v1/spaces/{space_id}/sync-status"), None)
+    }
+
     // --- types, collections & properties (catalog source) ---
     /// GET /v1/spaces/{s}/types?includeHidden=true — every type,
     /// hidden ones included: the store types are hidden (ADR-027 §2,
