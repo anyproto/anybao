@@ -2,7 +2,7 @@
 
 Status: **Accepted** (2026-07-07); §1 amended 2026-08-31 (backends,
 model profiles, traits — BOB-74); §5 amended 2026-09-24 (skill index —
-BOB-160)
+BOB-160); §3 amended 2026-11-19 (the run id on every bubble — BOB-243)
 Date: 2026-07-07
 Builds on: ADR-001..004 (accepted); plan §4 (loop control, provider
 resolution, orientation summaries), §5 sketch
@@ -476,11 +476,19 @@ collapsing past the 1k inline budget. It rides the cell span as
   `chat_messages-v4`): `outcome` = `error` (the run died — the text
   is "Something broke mid-run: <type>: <msg>") or `interrupted` (a
   hard break — "Stopped."), and `debugLink` = the run id (`run_…`,
-  what `anyrt trace show` takes). A normal reply carries neither.
+  what `anyrt trace show` takes). A normal reply carries no `outcome`.
   Clients key their rendering on `outcome` (a warning, a stop mark)
   and the trace lookup on `debugLink`; the text is for the human and
   never carries a trace ref. The vocabulary is the host's — the
   server stores `outcome` opaquely.
+
+  **Every bubble carries `debugLink` (amendment 2026-11-19, BOB-243).**
+  The loop stamps the run id on each bubble it posts, interim and
+  final, so a client opens the trace of any message (the code view:
+  ADR-034, the same-device read of `trace_records`). A run started
+  with no `traceRef` (the program run by hand) posts none. A bubble
+  posted before this amendment has none either; a client shows such a
+  message without a run and does not guess one from the text.
 
 ### 4. Digest policy (guest-side, in the toolcaller)
 
