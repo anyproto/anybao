@@ -8,6 +8,7 @@ may be; the user's own identity never."""
 
 import json
 
+import pytest
 from brain_fakes import FakeSpace
 from connectorenv import connector_kernel
 
@@ -89,3 +90,37 @@ def test_the_identity_resolver_reads_nothing_while_nobody_is_excluded():
     who = k.IdentityResolver(s.space, {"personIds": set(), "identities": set()})
     assert who.kept_out("ada-id") is False
     assert s.calls == []                                     # no name lookup, no person read
+
+
+def _pure_kit():
+    def effect(name, payload):
+        raise AssertionError(f"unexpected effect {name}")
+    return kit(effect)
+
+
+@pytest.mark.parametrize("addr", [
+    "noreply@github.com", "no-reply@shop.com", "meetings-noreply@google.com",
+    "drive-shares-dm-noreply@google.com", "support+notifications@figma.com",
+    "announcements@figma.com", "changelog@updates.linear.app", "security@updates.linear.app",
+    "invoice+statements@mail.anthropic.com", "billing@stripe.com", "list@googlegroups.com",
+])
+def test_service_addresses_are_noise(addr):
+    pure = _pure_kit()
+    assert pure.is_noise(addr)
+
+
+@pytest.mark.parametrize("addr", [
+    "ada@lab.org", "hello@startup.io", "support@vendor.com", "noreen@lab.org",
+    "replyall@lab.org", "news.desk@paper.com",
+])
+def test_addresses_a_person_may_answer_from_are_not_noise(addr):
+    pure = _pure_kit()
+    assert not pure.is_noise(addr)
+
+
+def test_bulk_tabs_and_relayed_names():
+    k = _pure_kit()
+    assert k.is_bulk({"labelIds": ["INBOX", "CATEGORY_PROMOTIONS"]})
+    assert not k.is_bulk({"labelIds": ["INBOX"]}) and not k.is_bulk({})
+    assert k.is_relayed("Zhanna Sharipova (via Google Drive)")
+    assert not k.is_relayed("Ada (Lab)") and not k.is_relayed("")

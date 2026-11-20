@@ -282,7 +282,18 @@ per address: a person whose `brain_person.emails` holds it, else one
 whose `person.email` equals it (filed under `brain_person`), else a new
 `profile` filed under `person` and `brain_person`. The mailbox's own
 addresses, noise senders, blocklisted senders and domains, and excluded
-people never become people. It preloads the first 1 000 persons; one
+people never become people. A noise sender carries a role word anywhere
+in its local part (`meetings-noreply@`, `support+notifications@`,
+`invoice+statements@`) or sends from an `updates.` / `news.` /
+`notifications.` / `marketing.` host; mail Gmail files under a bulk tab,
+spam or trash (`brainKit.BULK_LABELS`, the heartbeat's set) is read past
+(`bulkSkipped` counts it); and a "X (via Service)" sender is the
+service's address, never a person. Found on a real first sync
+(2026-11-11, BOB-232): 11 of 23 people were Figma, Linear and Google
+noreply senders. A new person takes the name their address carried most
+often in the run, preferring one no other address carried — a group's
+name rides every member's mail, and the first name alphabetically had
+named a colleague after his Google Group. It preloads the first 1 000 persons; one
 past them is found by any of their addresses (`brain_person.emails`,
 then `person.email`) and merged into, never overwritten or minted
 twice. It reads only mail dated within the last 30 days, with or
