@@ -169,6 +169,8 @@ pub struct HttpTransport {
     request_timeout: Duration,
 }
 
+type HttpResponse = ureq::http::Response<ureq::Body>;
+
 impl HttpTransport {
     pub fn new(base_url: &str) -> Self {
         Self::with_timeouts(base_url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
@@ -177,48 +179,89 @@ impl HttpTransport {
     /// `connect` bounds every dial; `request` bounds each one-shot
     /// call end to end (the stream is exempt).
     pub fn with_timeouts(base_url: &str, connect: Duration, request: Duration) -> Self {
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(connect))
+            // a non-2xx is the server's error envelope: data, not an error
+            .http_status_as_error(false)
+            .build();
         HttpTransport {
             base: base_url.trim_end_matches('/').to_string(),
-            agent: ureq::AgentBuilder::new().timeout_connect(connect).build(),
+            agent: ureq::Agent::new_with_config(config),
             request_timeout: request,
         }
     }
 
-    /// An unbounded request — the stream's; one-shot calls go through
-    /// `bounded`.
-    fn request(&self, method: &str, path: &str) -> ureq::Request {
-        self.agent
-            .request(method, &format!("{}{}", self.base, path))
-            .set("Content-Type", "application/json")
-    }
-
-    /// A one-shot request under `REQUEST_TIMEOUT`.
-    fn bounded(&self, method: &str, path: &str) -> ureq::Request {
-        self.request(method, path).timeout(self.request_timeout)
-    }
-
-    fn dispatch(req: ureq::Request, body: Option<&Value>) -> Result<ureq::Response, AnyError> {
-        let sent = match body {
-            Some(b) => req.send_string(&b.to_string()),
-            None => req.call(),
-        };
-        match sent {
-            Ok(r) => Ok(r),
-            Err(ureq::Error::Status(_, r)) => Ok(r), // error envelope is data
-            Err(e) => Err(transport_err(e)),
+    /// One request. `timeout` is the end-to-end bound of a one-shot
+    /// call (`REQUEST_TIMEOUT`); `None` is the stream's — unbounded.
+    fn dispatch(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+        timeout: Option<Duration>,
+    ) -> Result<HttpResponse, AnyError> {
+        // the `url` crate's parse is the wire form: it percent-encodes
+        // what a bare `http::Uri` refuses (a space, non-ASCII)
+        let url = url::Url::parse(&format!("{}{}", self.base, path))
+            .map_err(|e| transport_err(format!("Bad URL: {e}")))?;
+        let mut builder = ureq::http::Request::builder()
+            .method(method)
+            .uri(url.as_str());
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
         }
+        let sent = match body {
+            Some(bytes) => {
+                let req = builder.body(bytes).map_err(transport_err)?;
+                let req = self
+                    .agent
+                    .configure_request(req)
+                    .timeout_global(timeout)
+                    .build();
+                self.agent.run(req)
+            }
+            None => {
+                let req = builder.body(()).map_err(transport_err)?;
+                let req = self
+                    .agent
+                    .configure_request(req)
+                    .timeout_global(timeout)
+                    .build();
+                self.agent.run(req)
+            }
+        };
+        sent.map_err(transport_err)
+    }
+
+    /// A one-shot JSON call under `REQUEST_TIMEOUT`.
+    fn bounded(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<HttpResponse, AnyError> {
+        let text = body.map(Value::to_string);
+        self.dispatch(
+            method,
+            path,
+            &[("Content-Type", "application/json")],
+            text.as_deref().map(str::as_bytes),
+            Some(self.request_timeout),
+        )
     }
 }
 
 /// Decode a response body as the (status, JSON) pair `send` promises.
-fn json_response(resp: ureq::Response) -> Result<(u16, Value), AnyError> {
-    let status = resp.status();
-    // read the body ourselves: ureq's `into_string` refuses anything
-    // over 10 MB, and a trace-store page of a long run (blob rows up
-    // to 1 MiB each, ADR-024 §1) legitimately is — the server is
+fn json_response(resp: HttpResponse) -> Result<(u16, Value), AnyError> {
+    let status = resp.status().as_u16();
+    // read the body through the reader: ureq's `read_to_string` refuses
+    // anything over 10 MB, and a trace-store page of a long run (blob
+    // rows up to 1 MiB each, ADR-024 §1) legitimately is — the server is
     // local and the sizes are bounded by what this runtime wrote
     let mut raw = String::new();
-    resp.into_reader()
+    resp.into_body()
+        .into_reader()
         .read_to_string(&mut raw)
         .map_err(transport_err)?;
     let data = if raw.is_empty() {
@@ -240,8 +283,7 @@ impl Transport for HttpTransport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<(u16, Value), AnyError> {
-        let resp = Self::dispatch(self.bounded(method, path), body)?;
-        json_response(resp)
+        json_response(self.bounded(method, path, body)?)
     }
 
     fn open_stream(
@@ -249,12 +291,19 @@ impl Transport for HttpTransport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Box<dyn Iterator<Item = String>>, AnyError> {
-        let req = self
-            .request("POST", path)
-            .set("Accept", "text/event-stream");
-        let resp = Self::dispatch(req, body)?;
+        let text = body.map(Value::to_string);
+        let resp = self.dispatch(
+            "POST",
+            path,
+            &[
+                ("Content-Type", "application/json"),
+                ("Accept", "text/event-stream"),
+            ],
+            text.as_deref().map(str::as_bytes),
+            None,
+        )?;
         Ok(Box::new(RawLines {
-            reader: BufReader::new(resp.into_reader()),
+            reader: BufReader::new(resp.into_body().into_reader()),
         }))
     }
 
@@ -265,18 +314,19 @@ impl Transport for HttpTransport {
         body: &[u8],
         content_type: &str,
     ) -> Result<(u16, Value), AnyError> {
-        let req = self.bounded(method, path).set("Content-Type", content_type);
-        let resp = match req.send_bytes(body) {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r, // error envelope is data
-            Err(e) => return Err(transport_err(e)),
-        };
+        let resp = self.dispatch(
+            method,
+            path,
+            &[("Content-Type", content_type)],
+            Some(body),
+            Some(self.request_timeout),
+        )?;
         json_response(resp)
     }
 
     fn read_raw(&self, path: &str) -> Result<Vec<u8>, AnyError> {
-        let resp = Self::dispatch(self.bounded("GET", path), None)?;
-        let status = resp.status();
+        let resp = self.bounded("GET", path, None)?;
+        let status = resp.status().as_u16();
         if status >= 400 {
             let (_, data) = json_response(resp)?;
             let err = data.get("error").cloned().unwrap_or(json!({}));
@@ -287,7 +337,8 @@ impl Transport for HttpTransport {
             });
         }
         let mut buf = Vec::new();
-        resp.into_reader()
+        resp.into_body()
+            .into_reader()
             .read_to_end(&mut buf)
             .map_err(transport_err)?;
         Ok(buf)

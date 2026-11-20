@@ -25,8 +25,8 @@ serde_json = "1"          # default Map = BTreeMap → sorted keys = canonical J
 toml = "1"                # anybao.toml host config (ADR-009 §1)
 sha2 = "0.10"
 hex = "0.4"
-ureq = { version = "2", features = ["tls", "json"] }
-url = "2"                # redirect Location resolution (ADR-011 §4; already in-tree via ureq)
+ureq = "3"
+url = "2"                # the wire form of a request url (ADR-021 §7.1)
 base64 = "0.22"          # http `response: "base64"` bodies (ADR-020 §1; already in-tree)
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
