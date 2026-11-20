@@ -1708,30 +1708,57 @@ impl Broker {
         // http facade follows hop by hop, each hop its own effect through
         // this boundary (ADR-008 §2). A hop the host followed alone would
         // pass no guard and leave no record.
-        let mut builder = ureq::AgentBuilder::new();
-        if stream {
-            // socket timeouts stand in for the whole-request cap a
-            // stream cannot have: read = "no chunk for idle s" (headers
-            // too), write = the request body, connect = total capped
-            // at 30 s; the total deadline is checked between chunks
-            builder = builder
-                .timeout_read(timeout_idle)
-                .timeout_write(timeout_idle)
-                .timeout_connect(timeout_total.min(std::time::Duration::from_secs(30)));
+        //
+        // What goes on the wire is the `url` crate's parse of the url —
+        // the form the secrets guard read (`url_forms`, ADR-021 §7.1) —
+        // and never the client's own reading of the guest's string.
+        let url_error = |message: String| EffectFailure {
+            type_: "URLError".into(),
+            message,
+        };
+        let wire_url = match url::Url::parse(&url) {
+            Ok(parsed) if parsed.host_str().is_some() => parsed.to_string(),
+            Ok(_) => return Err(url_error(format!("{url}: Bad URL: empty host"))),
+            Err(e) => return Err(url_error(format!("{url}: Bad URL: {e}"))),
+        };
+        let mut config = ureq::Agent::config_builder()
+            .max_redirects(0)
+            // non-2xx is data, not error
+            .http_status_as_error(false)
+            .timeout_connect(Some(timeout_total.min(std::time::Duration::from_secs(30))));
+        config = if stream {
+            // per-read and per-write timeouts stand in for the
+            // whole-request cap a stream cannot have: read = "no chunk
+            // for idle s" (headers too), write = the request body,
+            // connect = total capped at 30 s; the total deadline is
+            // checked between chunks
+            config
+                .timeout_per_read(Some(timeout_idle))
+                .timeout_per_write(Some(timeout_idle))
+        } else {
+            config.timeout_global(Some(timeout_total))
+        };
+        // a ranged read asks for the bytes as stored: no `Accept-Encoding`
+        // of the client's own, or a slice of a gzip body fails to decode
+        let ranged = payload
+            .get("headers")
+            .and_then(|h| h.as_object())
+            .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("range")));
+        if ranged {
+            config = config.accept_encoding(ureq::config::AutoHeaderValue::None);
         }
-        let agent = builder.redirects(0).build();
+        let agent = ureq::Agent::new_with_config(config.build());
         let has_content_type = payload
             .get("headers")
             .and_then(|h| h.as_object())
             .is_some_and(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type")));
-        // a plain request's cap is ureq's whole-request timeout; a timeout
-        // that ends it there is the total deadline, worded like a stream's
-        // so a caller can tell it from a stall worth retrying (ADR-002 §1)
+        // a plain request's cap is the client's whole-request timeout; a
+        // timeout that ends it there is the total deadline, worded like a
+        // stream's so a caller can tell it from a stall worth retrying
+        // (ADR-002 §1)
         let started = std::time::Instant::now();
-        let plain_failure = |message: String| {
-            let total_hit = !stream
-                && message.contains("timed out")
-                && started.elapsed() >= timeout_total.mul_f64(0.9);
+        let plain_failure = |timed_out: bool, message: String| {
+            let total_hit = !stream && timed_out && started.elapsed() >= timeout_total.mul_f64(0.9);
             EffectFailure {
                 type_: "URLError".into(),
                 message: if total_hit {
@@ -1744,50 +1771,73 @@ impl Broker {
                 },
             }
         };
-        let mut req = agent.request(&verb, &url);
-        if !stream {
-            req = req.timeout(timeout_total);
-        }
+        // a header set twice keeps the last value: the credential's
+        // header replaces a guest's of the same name
+        let mut head = ureq::http::HeaderMap::new();
+        let mut set = |name: &str, value: &str| -> Result<(), EffectFailure> {
+            // the value stays out of the message: it can be a credential
+            let bad = |what: &str| EffectFailure {
+                type_: "URLError".into(),
+                message: format!("{wire_url}: Bad Header: invalid {what} for header {name:?}"),
+            };
+            let key =
+                ureq::http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| bad("name"))?;
+            let value = ureq::http::HeaderValue::from_str(value).map_err(|_| bad("value"))?;
+            head.insert(key, value);
+            Ok(())
+        };
         let mut has_accept = false;
         if let Some(headers) = payload.get("headers").and_then(|h| h.as_object()) {
             for (k, v) in headers {
                 has_accept |= k.eq_ignore_ascii_case("accept");
                 if let Some(s) = v.as_str() {
-                    req = req.set(k, s);
+                    set(k, s)?;
                 }
             }
         }
         if stream && !has_accept {
-            req = req.set("Accept", "text/event-stream");
+            set("Accept", "text/event-stream")?;
         }
         if let Some((header, value)) = &cred {
-            req = req.set(header, value);
+            set(header, value)?;
         }
         let sent = match &wire {
-            Wire::Json(text) => req
-                .set("Content-Type", "application/json")
-                .send_string(text),
-            Wire::Text(text) => req.send_string(text),
+            Wire::Json(text) => {
+                set("Content-Type", "application/json")?;
+                http_send(&agent, &verb, &wire_url, head, text.as_str())
+            }
+            Wire::Text(text) => http_send(&agent, &verb, &wire_url, head, text.as_str()),
             Wire::Bytes(bytes, mime) => {
                 if !has_content_type {
-                    req = req.set("Content-Type", mime);
+                    set("Content-Type", mime)?;
                 }
-                req.send_bytes(bytes)
+                http_send(&agent, &verb, &wire_url, head, bytes.as_slice())
             }
-            Wire::None => req.call(),
+            Wire::None => http_send(&agent, &verb, &wire_url, head, ()),
         };
         let resp = match sent {
             Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r, // non-2xx is data, not error
-            Err(e) => return Err(plain_failure(e.to_string())),
+            Err(e) => {
+                return Err(plain_failure(
+                    matches!(e, ureq::Error::Timeout(_)),
+                    transport_message(&wire_url, &e),
+                ))
+            }
         };
-        let status = resp.status();
-        let final_url = resp.get_url().to_string(); // as sent (ADR-008 §2)
-        let headers: Map<String, Value> = resp
-            .headers_names()
-            .iter()
-            .filter_map(|h| resp.header(h).map(|v| (h.to_lowercase(), json!(v))))
-            .collect();
+        let status = resp.status().as_u16();
+        // as sent (ADR-008 §2): one effect is one request, so the
+        // response's url is the request's
+        let final_url = wire_url;
+        // a header that repeats keeps its first value; one that is not
+        // UTF-8 is left out
+        let mut headers: Map<String, Value> = Map::new();
+        for (name, value) in resp.headers() {
+            if let Ok(text) = std::str::from_utf8(value.as_bytes()) {
+                headers
+                    .entry(name.as_str().to_string())
+                    .or_insert_with(|| json!(text));
+            }
+        }
         // ADR-026 §3: the host classifies the body — a text media type
         // that decodes as UTF-8 is `body` text (a `text/*` that does not
         // decodes lossily: text by declaration); anything else is bytes,
@@ -1799,10 +1849,6 @@ impl Broker {
             // chunks: the total deadline (clamped to the run's wall
             // deadline, like sh.run — ADR-024 §1), the interrupt flag
             // (/break), the byte cap. Every end is a URLError.
-            let url_error = |message: String| EffectFailure {
-                type_: "URLError".into(),
-                message,
-            };
             let mut deadline = std::time::Instant::now() + timeout_total;
             let mut run_bound = false;
             if let Some(d) = self.deadline {
@@ -1811,7 +1857,7 @@ impl Broker {
                     run_bound = true;
                 }
             }
-            let mut reader = resp.into_reader();
+            let mut reader = resp.into_body().into_reader();
             let mut buf = [0u8; 16 * 1024];
             loop {
                 if std::time::Instant::now() >= deadline {
@@ -1838,24 +1884,20 @@ impl Broker {
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                        ) =>
-                    {
+                    Err(e) if read_timed_out(&e) => {
                         return Err(url_error(format!(
                             "{final_url}: stream idle for {}s: timed out reading response",
                             timeout_idle.as_secs_f64()
                         )))
                     }
-                    Err(e) => return Err(url_error(format!("{final_url}: {e}"))),
+                    Err(e) => return Err(url_error(read_message(&final_url, &e))),
                 }
             }
         } else {
-            resp.into_reader()
+            resp.into_body()
+                .into_reader()
                 .read_to_end(&mut bytes)
-                .map_err(|e| plain_failure(e.to_string()))?;
+                .map_err(|e| plain_failure(read_timed_out(&e), read_message(&final_url, &e)))?;
         }
         let force_text = payload.get("response").and_then(|r| r.as_str()) == Some("text");
         let media = media_of(headers.get("content-type").and_then(|v| v.as_str()));
@@ -2515,6 +2557,61 @@ fn host_allowed(url: &str, hosts: &[String]) -> bool {
 /// A streamed body is buffered whole until its end (ONE record, ADR-002
 /// §1): past this it is a URLError, not memory.
 pub const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
+
+/// One request through `agent`: `headers` as given, `body` as the wire
+/// body (`()` = none).
+fn http_send(
+    agent: &ureq::Agent,
+    verb: &str,
+    url: &str,
+    headers: ureq::http::HeaderMap,
+    body: impl ureq::AsSendBody,
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let mut request = ureq::http::Request::builder()
+        .method(verb)
+        .uri(url)
+        .body(body)?;
+    *request.headers_mut() = headers;
+    agent.run(request)
+}
+
+/// A transport failure as the `URLError` message: the url, then what
+/// failed. A timeout says which wait ran out — a read that got nothing
+/// is "timed out reading response", the stall a caller retries.
+fn transport_message(url: &str, e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::Timeout(ureq::Timeout::PerRead) => {
+            format!("{url}: timed out reading response")
+        }
+        ureq::Error::Timeout(ureq::Timeout::PerWrite) => {
+            format!("{url}: timed out writing request")
+        }
+        ureq::Error::Timeout(reason) => format!("{url}: timed out ({reason})"),
+        e => format!("{url}: {e}"),
+    }
+}
+
+/// The client's own error inside a body-read failure, when it is one.
+fn read_cause(e: &std::io::Error) -> Option<&ureq::Error> {
+    e.get_ref().and_then(|inner| inner.downcast_ref())
+}
+
+/// A body read that ended on a timeout — the client's, or the socket's.
+fn read_timed_out(e: &std::io::Error) -> bool {
+    matches!(read_cause(e), Some(ureq::Error::Timeout(_)))
+        || matches!(
+            e.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        )
+}
+
+/// A body-read failure as the `URLError` message.
+fn read_message(url: &str, e: &std::io::Error) -> String {
+    match read_cause(e) {
+        Some(cause) => transport_message(url, cause),
+        None => format!("{url}: {e}"),
+    }
+}
 
 /// The `timeout` of an http verb (ADR-002 §1) as `(total, idle)`: a
 /// number is the whole-request cap, `{idle, total}` overrides key by
@@ -5253,6 +5350,105 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.type_, "URLError");
         assert!(!err.message.contains("total timeout"), "{}", err.message);
+    }
+
+    #[test]
+    fn http_reads_a_body_from_a_peer_that_closed() {
+        // anybao#141: the peer answers with a `Content-Length` body and
+        // closes at once, so the client hands a dead socket back to its
+        // pool. ureq 2 panicked there on macOS (`set_read_timeout` is
+        // EINVAL on a closed socket) and the desktop shell aborts on a
+        // panic; the answer is data whatever the socket did next.
+        use std::io::Write;
+        for (reply, body) in [
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"[..],
+                "hello",
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n"[..],
+                "",
+            ),
+        ] {
+            let (url, _head) = one_shot_server(move |sock| {
+                sock.write_all(reply).unwrap();
+                let _ = sock.shutdown(std::net::Shutdown::Both);
+            });
+            let mut b = make_broker("run_peer_closed");
+            let out = b.call("http.get", json!({"url": url})).unwrap();
+            assert_eq!(out["status"], 200);
+            assert_eq!(out["body"], body);
+        }
+    }
+
+    #[test]
+    fn http_sends_the_parsed_url_and_one_value_per_header() {
+        use std::io::Write;
+        let (url, head) = one_shot_server(|sock| {
+            sock.write_all(
+                b"HTTP/1.1 404 Not Found\r\nX-Twice: first\r\nX-Twice: second\r\n\
+                  Content-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+            )
+            .unwrap();
+        });
+        let origin = url.strip_suffix("/v1/messages").unwrap().to_string();
+        let mut b = make_broker("run_wire_shape");
+        b.secrets.insert("connector.key.x".into(), "sk-live".into());
+        let mut payload = cred_payload(format!("{origin}/a/../v1/x y"));
+        // a guest header under the credential's name, in another case
+        payload["headers"] = json!({"x-api-token": "guest", "X-Other": "kept"});
+        payload["json"] = json!({"q": 1});
+        // a body on a verb that seldom carries one still goes out
+        let out = b.call("http.delete", payload).unwrap();
+        // non-2xx is data; a repeated response header keeps its first value
+        assert_eq!(out["status"], 404);
+        assert_eq!(out["body"], "no");
+        assert_eq!(out["headers"]["x-twice"], "first");
+        // the url on the wire and in the output is the `url` crate's
+        // parse — the form the secrets guard read (ADR-021 §7.1)
+        assert_eq!(out["url"], json!(format!("{origin}/v1/x%20y")));
+        let head = head.recv().unwrap();
+        assert!(head.starts_with("DELETE /v1/x%20y HTTP/1.1\r\n"), "{head}");
+        let head = head.to_ascii_lowercase();
+        assert!(head.contains("x-api-token: sk-live\r\n"), "{head}");
+        assert!(!head.contains("guest"), "{head}");
+        assert!(head.contains("x-other: kept\r\n"), "{head}");
+        assert!(
+            head.contains("content-type: application/json\r\n"),
+            "{head}"
+        );
+        assert!(head.contains("content-length: 7\r\n"), "{head}");
+        // the client offers gzip on its own, except on a ranged read
+        assert!(head.contains("accept-encoding: gzip\r\n"), "{head}");
+        let (url, head) = one_shot_server(|sock| {
+            sock.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        b.call(
+            "http.get",
+            json!({"url": url, "headers": {"Range": "bytes=0-9"}}),
+        )
+        .unwrap();
+        let head = head.recv().unwrap().to_ascii_lowercase();
+        assert!(head.contains("range: bytes=0-9\r\n"), "{head}");
+        assert!(!head.contains("accept-encoding"), "{head}");
+    }
+
+    #[test]
+    fn http_bad_url_or_header_is_a_url_error_without_the_credential() {
+        let mut b = make_broker("run_bad_wire");
+        b.secrets
+            .insert("connector.key.x".into(), "sk\nlive".into());
+        let err = b.call("http.get", json!({"url": "http://"})).unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(err.message.contains("Bad URL"), "{}", err.message);
+        // a value no header can carry: named by header, never quoted
+        let err = b
+            .call("http.get", cred_payload("http://127.0.0.1:1/x".into()))
+            .unwrap_err();
+        assert_eq!(err.type_, "URLError");
+        assert!(err.message.contains("Bad Header"), "{}", err.message);
+        assert!(!err.message.contains("live"), "{}", err.message);
     }
 
     #[test]

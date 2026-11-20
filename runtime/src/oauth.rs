@@ -188,8 +188,31 @@ impl OauthState {
             persist,
             consent: None,
             shutdown: Arc::new(AtomicBool::new(false)),
-            agent: ureq::agent(),
+            agent: ureq::Agent::new_with_config(
+                ureq::Agent::config_builder()
+                    // a non-2xx carries the provider's error code in its
+                    // body: read here as data, never a bare status
+                    .http_status_as_error(false)
+                    .build(),
+            ),
         }
+    }
+
+    /// POST a form to a provider endpoint under `TOKEN_TIMEOUT_S`: the
+    /// status and the body as JSON (`Null` when it is not JSON).
+    fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<(u16, Value), ureq::Error> {
+        let mut resp = self
+            .agent
+            .post(url)
+            .config()
+            .timeout_global(Some(Duration::from_secs(TOKEN_TIMEOUT_S)))
+            .build()
+            .send_form(form.iter().copied())?;
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        Ok((
+            resp.status().as_u16(),
+            serde_json::from_str(&text).unwrap_or(Value::Null),
+        ))
     }
 
     /// The OAuth client for a sub-ref (`.client_id` / `.client_secret`):
@@ -305,23 +328,18 @@ impl OauthState {
             ));
         }
 
-        let resp = self
-            .agent
-            .post(&desc.token_url)
-            .timeout(std::time::Duration::from_secs(TOKEN_TIMEOUT_S))
-            .send_form(&[
+        let resp = self.post_form(
+            &desc.token_url,
+            &[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", &refresh_token),
                 ("client_id", &client_id),
                 ("client_secret", &client_secret),
-            ]);
+            ],
+        );
         let body: Value = match resp {
-            Ok(r) => {
-                serde_json::from_str(&r.into_string().unwrap_or_default()).unwrap_or(Value::Null)
-            }
-            Err(ureq::Error::Status(code, r)) => {
-                let body: Value = serde_json::from_str(&r.into_string().unwrap_or_default())
-                    .unwrap_or(Value::Null);
+            Ok((code, body)) if code < 400 => body,
+            Ok((code, body)) => {
                 // only the provider's error CODE travels into messages —
                 // never the raw body (structural redaction, ADR-011 §9)
                 let err_code = body["error"].as_str().unwrap_or("").to_string();
@@ -564,11 +582,8 @@ impl OauthState {
         if let Some(tok) = &refresh {
             if !desc.revoke_url.is_empty() {
                 revoked = self
-                    .agent
-                    .post(&desc.revoke_url)
-                    .timeout(Duration::from_secs(TOKEN_TIMEOUT_S))
-                    .send_form(&[("token", tok)])
-                    .is_ok();
+                    .post_form(&desc.revoke_url, &[("token", tok)])
+                    .is_ok_and(|(code, _)| code < 400);
             }
         }
         if let Err(e) = self.drop_grant(provider) {
@@ -798,25 +813,20 @@ impl OauthState {
         let client_secret = self
             .client_value(&format!("{handle}.client_secret"))
             .unwrap_or_default();
-        let resp = self
-            .agent
-            .post(&desc.token_url)
-            .timeout(Duration::from_secs(TOKEN_TIMEOUT_S))
-            .send_form(&[
+        let resp = self.post_form(
+            &desc.token_url,
+            &[
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("redirect_uri", redirect_uri),
                 ("client_id", &client_id),
                 ("client_secret", &client_secret),
                 ("code_verifier", verifier),
-            ]);
+            ],
+        );
         let body: Value = match resp {
-            Ok(r) => {
-                serde_json::from_str(&r.into_string().unwrap_or_default()).unwrap_or(Value::Null)
-            }
-            Err(ureq::Error::Status(code, r)) => {
-                let body: Value = serde_json::from_str(&r.into_string().unwrap_or_default())
-                    .unwrap_or(Value::Null);
+            Ok((status, body)) if status < 400 => body,
+            Ok((code, body)) => {
                 let err_code = body["error"].as_str().unwrap_or("");
                 return Err((
                     "token_exchange_failed".into(),
@@ -1309,7 +1319,11 @@ mod tests {
             Some(e) => format!("{redirect}?error={e}&state={state_tok}"),
             None => format!("{redirect}?code={code}&state={state_tok}"),
         };
-        let _ = ureq::get(&cb).timeout(Duration::from_secs(2)).call();
+        let _ = ureq::get(&cb)
+            .config()
+            .timeout_global(Some(Duration::from_secs(2)))
+            .build()
+            .call();
         q
     }
 
