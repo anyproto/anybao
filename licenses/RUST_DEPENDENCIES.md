@@ -6415,7 +6415,7 @@ third-party/chromium/LICENSE.
 ## MIT License
 
 Applies to:
-- anyrt 0.13.0
+- anyrt 0.13.1
 
 ```text
 Beautiful Soup is made available under the MIT license:
@@ -6455,7 +6455,7 @@ Isaac Muse
 ## MIT License
 
 Applies to:
-- anyrt 0.13.0
+- anyrt 0.13.1
 
 ```text
 Copyright (c) 2010-2024 Benjamin Peterson
@@ -6688,7 +6688,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## MIT License
 
 Applies to:
-- anyrt 0.13.0
+- anyrt 0.13.1
 
 ```text
 MIT License
@@ -6748,7 +6748,7 @@ SOFTWARE.
 ## MIT License
 
 Applies to:
-- anyrt 0.13.0
+- anyrt 0.13.1
 
 ```text
 MIT License
@@ -7084,7 +7084,7 @@ SOFTWARE.
 ## MIT License
 
 Applies to:
-- anyrt 0.13.0
+- anyrt 0.13.1
 
 ```text
 The MIT License (MIT)
