@@ -13,7 +13,12 @@ __any_category__ = "plugin"  # the AI brain is a plugin of the connectors repo (
 # we last spoke and how often. It never reads a body: From / To / Cc only.
 # Excluded people, blocklisted senders and domains, noise senders and the
 # mailbox's own addresses never become people; mail under a blocklisted
-# label is read past. Deterministic; no model.
+# label, and mail Gmail files under a bulk tab, spam or trash, is read past
+# (BOB-232: a first sync made Figma, Linear and Google's noreply senders
+# people). A "X (via Service)" sender is the service's address, not X's: it
+# never becomes a person. A new person is named by the name their address
+# carried most often, preferring one no other address carried in the run
+# (a group's name rides every member's mail). Deterministic; no model.
 #
 # Resolution order for an address: a person whose brain_person.emails holds
 # it, then one whose person.email equals it, else a new person. A run
@@ -97,10 +102,10 @@ class _People:
 
 def _gather(space, boxes, cursor, own, excl, block, people):
     """Walk the mail that landed since the cursor → ({addr: seen}, new cursor,
-    messages read, mass mailings). Arrival order (ADR-033 §4.4); a
+    messages read, mass mailings, bulk mail). Arrival order (ADR-033 §4.4); a
     person's first / last contact are the min / max dates seen, so the
     order does not matter here."""
-    seen, read, unknown, mass = {}, 0, set(), 0
+    seen, read, unknown, mass, bulk = {}, 0, set(), 0, 0
     floor = kit.backfill_floor_ms()
     for box_id, _addr in boxes:
         # the date floor holds on every read: the backfill lands older mail
@@ -108,9 +113,11 @@ def _gather(space, boxes, cursor, own, excl, block, people):
         last = cursor.get(box_id)
         rows, _newest = kit.mail_since(space, box_id, last, PER_MAILBOX, floor_ms=floor)
         for row in rows:
-            people_here = [] if kit.labelled_out(row, block) else [
+            is_bulk = kit.is_bulk(row)
+            bulk += is_bulk
+            people_here = [] if (is_bulk or kit.labelled_out(row, block)) else [
                 (n, a) for n, a in kit.addresses(row.get("from"), row.get("to"), row.get("cc"))
-                if a not in own and not kit.kept_out(a, excl, block)]
+                if a not in own and not kit.kept_out(a, excl, block) and not kit.is_relayed(n)]
             fresh = {a for _, a in people_here
                      if a not in people.by_email and a not in seen and a not in unknown}
             if len(fresh) > MAX_NEW:
@@ -123,10 +130,10 @@ def _gather(space, boxes, cursor, own, excl, block, people):
             unknown |= fresh
             at = (row.get("internalDate") or 0) / 1000
             for name, addr in people_here:
-                s = seen.setdefault(addr, {"names": set(), "first": at, "last": 0.0,
+                s = seen.setdefault(addr, {"names": {}, "first": at, "last": 0.0,
                                            "count": 0})
                 if name and name.lower() != addr:
-                    s["names"].add(name)
+                    s["names"][name] = s["names"].get(name, 0) + 1
                 s["first"] = min(s["first"], at)
                 s["last"] = max(s["last"], at)
                 s["count"] += 1
@@ -136,7 +143,24 @@ def _gather(space, boxes, cursor, own, excl, block, people):
             read += 1
         if last:
             cursor[box_id] = last
-    return seen, cursor, read, mass
+    return seen, cursor, read, mass, bulk
+
+
+def _shared_names(seen):
+    """The names more than one address carried in this run: a group or list
+    name, which the mail of every member rides under."""
+    owners = {}
+    for addr, s in seen.items():
+        for n in s["names"]:
+            owners.setdefault(n.casefold(), set()).add(addr)
+    return {n for n, addrs in owners.items() if len(addrs) > 1}
+
+
+def _display_name(names, shared):
+    """The name a new person gets: one no other address carried before one
+    another did, then the most used, then the first alphabetically."""
+    ranked = sorted(names, key=lambda n: (n.casefold() in shared, -names[n], n))
+    return ranked[0] if ranked else None
 
 
 def _merged(current, addr, s):
@@ -158,13 +182,14 @@ def _merged(current, addr, s):
 
 def _apply(space, people, seen, excl):
     minted = updated = 0
+    shared = _shared_names(seen)
     for addr in sorted(seen):
         s = seen[addr]
         pid, filed = people.find(addr)
         if pid is not None and pid in excl["personIds"]:
             continue
         if pid is None:
-            name = sorted(s["names"])[0] if s["names"] else addr
+            name = _display_name(s["names"], shared) or addr
             made = _any.create_object(space, {
                 "type": "profile", "collections": ["person", "brain_person"], "name": name,
                 "initialProperties": {
@@ -313,11 +338,12 @@ def main(args):
     boxes = kit.mailboxes(space)
     own = {addr for _, addr in boxes if addr}
     people = _People(space)
-    seen, cursor, read, mass = _gather(space, boxes, _cursor(space, hub, datasets), own,
+    seen, cursor, read, mass, bulk = _gather(space, boxes, _cursor(space, hub, datasets), own,
                                        excl, block, people)
     minted, updated = _apply(space, people, seen, excl)
     kit.write_config(space, hub, datasets, "people.cursor", {"mail": cursor})
     linked = _link_promises(space, hub, datasets, people)
     return {"mailboxes": len(boxes), "messages": read, "minted": minted,
             "updated": updated, "promisesLinked": linked, "massSkipped": mass,
+            "bulkSkipped": bulk,
             **_link_identities(space, hub, datasets, excl)}

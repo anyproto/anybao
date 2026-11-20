@@ -84,10 +84,6 @@ SEND_CHECK_DAYS = 7
 OPEN = ("open", "snoozed")
 REPLY_REASON = "addressed to you, no reply yet"
 GONE_REASON = "source gone or kept out"
-# Gmail's own bulk tabs (and spam, trash): mail there is quiet whoever sent
-# it, so a newsletter from a plain address never becomes a reply card
-BULK_LABELS = frozenset(("CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES",
-                         "CATEGORY_FORUMS", "SPAM", "TRASH"))
 DRAFTING = {"maxPerRun": 3, "replyWindowDays": 5, "meetingSoonHours": 24, "quietSenders": []}
 
 _MAIL = re.compile(r"/([^/]+)/email_messages/([^/]+)$")
@@ -156,7 +152,8 @@ def decide_mail(message, own_address, replied, quiet, kept_out=False):
         return None
     if not sender or kit.is_noise(sender) or any(q.search(sender) for q in quiet):
         return ("new_mail", "quiet", "automated sender", False)
-    if BULK_LABELS & set(message.get("labelIds") or []):
+    # a newsletter from a plain address never becomes a reply card
+    if kit.is_bulk(message):
         return ("new_mail", "quiet", "a Gmail bulk tab", False)
     to = {a for _, a in kit.addresses(message.get("to"))}
     cc = {a for _, a in kit.addresses(message.get("cc"))}

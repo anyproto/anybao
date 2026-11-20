@@ -70,8 +70,8 @@ def test_one_person_per_correspondent_and_never_myself_or_noise():
     assert ada["brain_person"]["lastContactAt"] == {"$date": 2_000_000}
     assert ada["brain_person"]["firstSeenAt"] == {"$date": 1_000_000}
     assert out == {"mailboxes": 1, "messages": 2, "minted": 2, "updated": 0,
-                   "promisesLinked": 0, "massSkipped": 0, "identitiesLinked": 0,
-                   "asksLinked": 0, "chatPromisesLinked": 0}
+                   "promisesLinked": 0, "massSkipped": 0, "bulkSkipped": 0,
+                   "identitiesLinked": 0, "asksLinked": 0, "chatPromisesLinked": 0}
     assert s.config("people.cursor") == {"mail": {"mb1": ver(s, "m2")}}
 
 
@@ -182,8 +182,8 @@ def test_before_the_first_mail_sync_there_is_nothing_to_read():
     s.seed_lists()
     _, out = run(s)
     assert out == {"mailboxes": 0, "messages": 0, "minted": 0, "updated": 0,
-                   "promisesLinked": 0, "massSkipped": 0, "identitiesLinked": 0,
-                   "asksLinked": 0, "chatPromisesLinked": 0}
+                   "promisesLinked": 0, "massSkipped": 0, "bulkSkipped": 0,
+                   "identitiesLinked": 0, "asksLinked": 0, "chatPromisesLinked": 0}
 
 
 def test_mail_under_a_blocklisted_label_makes_no_person_but_is_read_past():
@@ -429,3 +429,75 @@ def test_mail_older_than_the_floor_that_lands_after_the_cursor_is_not_read():
     _, out = run(s, now=now)
     assert sorted(people(s)) == ["ada@lab.org"] and out["messages"] == 0
     assert s.config("people.cursor") == {"mail": {"mb1": "v-0001"}}
+
+
+def test_service_senders_from_a_first_sync_never_become_people():
+    # BOB-232: the senders a real first sync made people
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    senders = ["Figma <support+notifications@figma.com>", "Figma <announcements@figma.com>",
+               "Google Meet <meetings-noreply@google.com>",
+               "Firebase App Distribution <firebase-noreply@google.com>",
+               "Anthropic <invoice+statements@mail.anthropic.com>",
+               "Linear <changelog@updates.linear.app>"]
+    for i, frm in enumerate(senders):
+        s.add_mail("mb1", f"m{i}", **{"from": frm, "to": ME, "internalDate": 1_000_000 + i})
+    _, out = run(s)
+    assert people(s) == {} and out["messages"] == len(senders)
+
+
+def test_mail_in_a_gmail_bulk_tab_makes_no_person_but_is_read_past():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "m1", **{"from": "Figma <events@figma.com>", "to": ME,
+                               "labelIds": ["INBOX", "CATEGORY_UPDATES"],
+                               "internalDate": 1_000_000})
+    s.add_mail("mb1", "m2", **{"from": "Ada <ada@lab.org>", "to": ME,
+                               "labelIds": ["INBOX", "CATEGORY_PERSONAL"],
+                               "internalDate": 2_000_000})
+    _, out = run(s)
+    assert sorted(people(s)) == ["ada@lab.org"]
+    assert out["bulkSkipped"] == 1 and out["messages"] == 2
+    assert s.config("people.cursor") == {"mail": {"mb1": ver(s, "m2")}}
+
+
+def test_a_relayed_sender_is_the_services_address_not_a_person():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "m1", **{"from": "Zhanna (via Google Drive) <drive-shares@google.com>",
+                               "to": ME, "internalDate": 1_000_000})
+    run(s)
+    assert people(s) == {}
+
+
+def test_a_new_person_is_named_by_their_own_name_not_a_groups():
+    # a group's name rides every member's mail; alphabetically it came first
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    s.add_mail("mb1", "m1", **{"from": "Ex-employees <fuks@corp.io>", "to": ME,
+                               "internalDate": 1_000_000})
+    s.add_mail("mb1", "m2", **{"from": "Ex-employees <ann@corp.io>", "to": ME,
+                               "internalDate": 2_000_000})
+    s.add_mail("mb1", "m3", **{"from": "Mark Fuks <fuks@corp.io>", "to": ME,
+                               "internalDate": 3_000_000})
+    run(s)
+    ps = people(s)
+    assert ps["fuks@corp.io"]["any"]["name"] == "Mark Fuks"
+    assert ps["fuks@corp.io"]["brain_person"]["aliases"] == ["Ex-employees", "Mark Fuks"]
+    # a name only a group ever gave is still better than the bare address
+    assert ps["ann@corp.io"]["any"]["name"] == "Ex-employees"
+
+
+def test_a_new_person_is_named_by_the_name_they_use_most():
+    s = FakeSpace()
+    s.add_mailbox("mb1", ME)
+    s.seed_lists()
+    for i, frm in enumerate(["Ada L. <ada@lab.org>", "Ada Lovelace <ada@lab.org>",
+                             "Ada Lovelace <ada@lab.org>"]):
+        s.add_mail("mb1", f"m{i}", **{"from": frm, "to": ME, "internalDate": 1_000_000 + i})
+    run(s)
+    assert people(s)["ada@lab.org"]["any"]["name"] == "Ada Lovelace"

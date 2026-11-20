@@ -26,13 +26,27 @@ _any = use("agent:any@v1")  # noqa: F821 - guest global
 # years of mail, and promises from years ago are not open promises
 BACKFILL_DAYS = 30
 
-# local parts and hosts that are never a person
+# local parts and hosts that are never a person. A role word counts anywhere
+# in the local part, between separators — services prefix and tag it
+# (meetings-noreply@, support+notifications@, invoice+statements@ — BOB-232).
+# Words a person may answer from (hello@, support@, team@) stay out: Gmail's
+# bulk tabs (BULK_LABELS) catch their newsletters instead.
 _NOISE = re.compile(
-    r"^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster|bounces?"
-    r"|calendar-notification)([+._-].*)?@"
+    r"^([a-z0-9]+[._+-])*(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster"
+    r"|bounces?|calendar-notification|announcements?|changelog|newsletters?|invoices?"
+    r"|billing|statements?|receipts?)([+._-].*)?@"
+    r"|@(updates|news|newsletters?|notifications?|marketing)\."
     r"|@([a-z0-9-]+\.)*googlegroups\.com$"
     r"|@(.+\.)?(mailchimp|sendgrid|mandrillapp|amazonses)\.(com|net)$",
     re.I)
+# Gmail's own bulk tabs (and spam, trash): mail there is no correspondence
+# whoever sent it — the heartbeat keeps it quiet, the people job mints nobody
+# from it
+BULK_LABELS = frozenset(("CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES",
+                         "CATEGORY_FORUMS", "SPAM", "TRASH"))
+# "Zhanna (via Google Drive)": a service relaying for a person — the name is
+# the person's, the address the service's
+_VIA = re.compile(r"\(via [^)]+\)\s*$", re.I)
 # the message a promise's `source` opens: …/<mailboxId>/email_messages/<messageId>
 _MAIL_LINK = re.compile(r"/([^/]+)/email_messages/([^/]+)$")
 
@@ -217,6 +231,16 @@ def addresses(*headers):
 
 def is_noise(addr):
     return bool(_NOISE.search(addr))
+
+
+def is_bulk(row):
+    """True when Gmail filed a synced message under a bulk tab, spam or trash."""
+    return bool(BULK_LABELS & set(row.get("labelIds") or []))
+
+
+def is_relayed(name):
+    """True for a "X (via Service)" display name."""
+    return bool(_VIA.search(name or ""))
 
 
 def domain_of(addr):
