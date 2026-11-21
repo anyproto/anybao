@@ -950,6 +950,12 @@ impl Transport for FakeSpace {
             }
             ("POST", ["v1", "spaces", sp, "objects", "query"]) => s.query_objects(sp, &body),
             ("POST", ["v1", "spaces", sp, "objects"]) => return Ok(s.create_object(sp, &body)),
+            ("GET", ["v1", "spaces", sp, "objects", oid]) => {
+                match s.objects.get(&(sp.to_string(), oid.to_string())) {
+                    Some(record) => json!({"objectId": oid, "record": record}),
+                    None => return Ok(err(404, "object.not_found", format!("no object {oid}"))),
+                }
+            }
             ("POST", ["v1", "spaces", sp, "query"]) => s.query(sp, &body),
             ("POST", ["v1", "spaces", sp, "modify"]) => return Ok(s.modify(sp, &body)),
             ("POST", ["v1", "spaces", sp, "properties", oid, "set", tid]) => {

@@ -839,6 +839,17 @@ impl Client {
         )
     }
 
+    /// GET /v1/spaces/{s}/objects/{id} — one object, `{objectId,
+    /// record}`; the record carries the property groups, `any.type`
+    /// (the object's one type) among them.
+    pub fn get_object(&self, space_id: &str, object_id: &str) -> Result<Value, AnyError> {
+        self.call(
+            "GET",
+            &format!("/v1/spaces/{space_id}/objects/{object_id}"),
+            None,
+        )
+    }
+
     // --- types, collections & properties (catalog source) ---
     /// GET /v1/spaces/{s}/types?includeHidden=true — every type,
     /// hidden ones included: the store types are hidden (ADR-027 §2,

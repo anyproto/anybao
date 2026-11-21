@@ -151,6 +151,11 @@ pub struct AgentStores {
 /// Find-or-create a harness type by xKey. Harness types are HIDDEN
 /// (ADR-027 §2): a client's type picker never offers them; the
 /// listing includes hidden rows, so the find never re-creates one.
+///
+/// The id this returns is a CANDIDATE: a type is a plain created
+/// object, not a bundle member, so two devices can each create one
+/// and the listing then holds several. `anchored_type` settles which
+/// one a store uses (ADR-017 §0, amended 2026-11-19).
 fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String> {
     for t in c.list_types(space)? {
         if t["xKey"] == xkey {
@@ -163,6 +168,39 @@ fn ensure_type(c: &Client, space: &str, name: &str, xkey: &str) -> Result<String
     }
     let created = c.create_type(space, &json!({"name": name, "xKey": xkey, "hidden": true}))?;
     Ok(created["typeId"].as_str().unwrap_or_default().to_string())
+}
+
+/// Derive one store anchor and return `(anchor, type)` — the type the
+/// anchor CARRIES, which is the only type whose parts can declare the
+/// anchor's collections (a write through any other is `400
+/// dataset.not_declared`). `candidate` types the anchor only when this
+/// call materializes it; on an anchor another device derived, the
+/// server ignores it, so the anchor is read back. A carried type that
+/// is not on this device yet is a retryable boot error.
+fn anchored_type(c: &Client, space: &str, seed: &str, candidate: &str) -> Result<(String, String)> {
+    let anchor = bundle_child_retry(c, space, "bao/v1", seed, candidate)?;
+    let object = c
+        .get_object(space, &anchor)
+        .with_context(|| format!("reading the {seed} anchor"))?;
+    let carried = match object["record"]["any"]["type"].as_str() {
+        Some(t) if !t.is_empty() && t != candidate => t.to_string(),
+        _ => return Ok((anchor, candidate.to_string())),
+    };
+    if !c
+        .list_types(space)?
+        .iter()
+        .any(|t| t["id"] == carried.as_str())
+    {
+        anyhow::bail!(
+            "the {seed} anchor carries type {carried}, which is not on this device yet \
+             (the space is still syncing) — the next boot retries"
+        );
+    }
+    warn!(
+        "store {seed}: several types hold the xKey — using {carried}, the one the anchor carries, \
+         not {candidate}"
+    );
+    Ok((anchor, carried))
 }
 
 /// The collection a type's dataset lives in, read off the datasets
@@ -308,9 +346,16 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         return Err(last_err.unwrap()).context("bao/v1 bundle never became ready");
     }
 
-    let cfg_t = ensure_type(c, space, "Agent Config", "agent_config")?;
-    let sec_t = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
-    let trg_t = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    // Candidates by xKey, then the anchors: each store takes the type
+    // its anchor carries, so the collection always matches the anchor
+    // whatever duplicates the listing holds.
+    let cfg_c = ensure_type(c, space, "Agent Config", "agent_config")?;
+    let sec_c = ensure_type(c, space, "Agent Secrets", "agent_secrets")?;
+    let trg_c = ensure_type(c, space, "Agent Trigger", "agent_trigger")?;
+    let (config, cfg_t) = anchored_type(c, space, "bao/config/v1", &cfg_c)?;
+    let (secrets, sec_t) = anchored_type(c, space, "bao/secrets/v1", &sec_c)?;
+    let (triggers, trg_t) = anchored_type(c, space, "bao/triggers/v1", &trg_c)?;
+    let (runs, runs_t) = anchored_type(c, space, "bao/runs/v1", &trg_c)?;
     // Declared fields carry behavior (a declared field needs a kind);
     // everything free-form rides the `dynamic` keyspace — undeclared
     // fields are any-typed and freely mutable. Config `value` is
@@ -377,17 +422,17 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
     let runs_ds = ensure_dataset(
         c,
         space,
-        &trg_t,
+        &runs_t,
         &json!({
             "key": RUNS_KEY, "displayName": "Agent Runs",
             "idRule": "user", "deleteBy": "anyone", "skipHistory": true,
             "dynamic": true, "fields": []}),
     )?;
     let stores = AgentStores {
-        config: bundle_child_retry(c, space, "bao/v1", "bao/config/v1", &cfg_t)?,
-        secrets: bundle_child_retry(c, space, "bao/v1", "bao/secrets/v1", &sec_t)?,
-        triggers: bundle_child_retry(c, space, "bao/v1", "bao/triggers/v1", &trg_t)?,
-        runs: bundle_child_retry(c, space, "bao/v1", "bao/runs/v1", &trg_t)?,
+        config,
+        secrets,
+        triggers,
+        runs,
         config_ds,
         secrets_ds,
         triggers_ds,
@@ -4781,6 +4826,68 @@ mod tests {
             calls[1].2,
             Some(json!({"name": "Agent Config", "xKey": "agent_config", "hidden": true}))
         );
+    }
+
+    #[test]
+    fn a_store_takes_the_type_its_anchor_carries() {
+        // a device with a new data folder made a second trigger type
+        // before the first one synced (2026-11-18): the listing gives
+        // the new one first, the anchor still carries the old one
+        let (c, log) = scripted(&[
+            (200, json!({"objectId": "anchor-trg"})),
+            (
+                200,
+                json!({"objectId": "anchor-trg", "record": {"any": {"type": "t-old"}}}),
+            ),
+            (
+                200,
+                json!({"types": [
+                    {"id": "t-new", "xKey": "agent_trigger", "hidden": true},
+                    {"id": "t-old", "xKey": "agent_trigger", "hidden": true}]}),
+            ),
+        ]);
+        assert_eq!(
+            anchored_type(&c, "s1", "bao/triggers/v1", "t-new").unwrap(),
+            ("anchor-trg".to_string(), "t-old".to_string())
+        );
+        let calls = log.lock().unwrap();
+        assert_eq!(calls[0].2.as_ref().unwrap()["type"], json!("t-new"));
+        assert_eq!(calls[1].1, "/v1/spaces/s1/objects/anchor-trg");
+    }
+
+    #[test]
+    fn a_store_waits_for_an_anchor_type_that_has_not_synced() {
+        // the anchor arrived before the type it carries: no store is
+        // declared on the candidate, the boot retries
+        let (c, _log) = scripted(&[
+            (200, json!({"objectId": "anchor-cfg"})),
+            (
+                200,
+                json!({"objectId": "anchor-cfg", "record": {"any": {"type": "t-old"}}}),
+            ),
+            (
+                200,
+                json!({"types": [{"id": "t-new", "xKey": "agent_config", "hidden": true}]}),
+            ),
+        ]);
+        let err = anchored_type(&c, "s1", "bao/config/v1", "t-new").unwrap_err();
+        assert!(err.to_string().contains("not on this device yet"), "{err}");
+    }
+
+    #[test]
+    fn a_store_keeps_its_candidate_when_the_anchor_agrees() {
+        let (c, log) = scripted(&[
+            (200, json!({"objectId": "anchor-cfg"})),
+            (
+                200,
+                json!({"objectId": "anchor-cfg", "record": {"any": {"type": "t-cfg"}}}),
+            ),
+        ]);
+        assert_eq!(
+            anchored_type(&c, "s1", "bao/config/v1", "t-cfg").unwrap(),
+            ("anchor-cfg".to_string(), "t-cfg".to_string())
+        );
+        assert_eq!(log.lock().unwrap().len(), 2, "no type listing");
     }
 
     #[test]
