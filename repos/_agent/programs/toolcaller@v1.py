@@ -1719,6 +1719,10 @@ def main(args):
         if text and not quiet:
             body = {"text": text,
                     "agent": {"name": agent_name, "done": done}}
+            if args.get("traceRef"):
+                # ADR-005 §3: every bubble names its run, so a client
+                # reads the trace of any message, not only a failed one
+                body["agent"]["debugLink"] = args["traceRef"]
             atts = _auto_attachments(text)
             if done:
                 # ADR-035 §5a: what the run changed and the reply did
