@@ -393,6 +393,18 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         triggers_ds,
         runs_ds,
     };
+    // A child's type is set on its first materialization only: one
+    // first derived under another type (an earlier boot, or a device
+    // whose harness type had not synced yet) keeps it, and every store
+    // write then answers `400 dataset.not_declared`.
+    for (id, type_id) in [
+        (&stores.config, &cfg_t),
+        (&stores.secrets, &sec_t),
+        (&stores.triggers, &trg_t),
+        (&stores.runs, &trg_t),
+    ] {
+        ensure_child_type(c, space, id, type_id)?;
+    }
     // Display names only — every consumer resolves these anchors by
     // bundle seed, never by name (ADR-017 §0), but a derived object
     // materializes nameless and is illegible in the UI (and a nameless
@@ -407,6 +419,24 @@ pub fn provision_agent_stores(c: &Client, space: &str) -> Result<AgentStores> {
         ensure_child_name(c, space, id, name)?;
     }
     Ok(stores)
+}
+
+/// Idempotent type stamp: read first so a no-op boot appends no
+/// change to the child's tree.
+fn ensure_child_type(c: &Client, space: &str, object_id: &str, want: &str) -> Result<()> {
+    let current = c
+        .get_properties(space, object_id)
+        .with_context(|| format!("read child properties {object_id}"))?
+        .pointer("/record/any/type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if current == want {
+        return Ok(());
+    }
+    c.set_object_type(space, object_id, want)
+        .with_context(|| format!("set type of child {object_id}"))?;
+    Ok(())
 }
 
 /// Idempotent display-name stamp: read first so a no-op boot appends
@@ -4756,6 +4786,26 @@ mod tests {
             .bundle_child("sp", "system:general-chat/v1", "bao/log/v1", "page", &[])
             .unwrap();
         assert!(child["objectId"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn provisioning_retypes_a_child_first_derived_under_another_type() {
+        let c = Client::with_transport(Box::new(crate::testutil::FakeSpace::new()));
+        c.ensure_bundle("sp", "bao/v1", "bao", "page", &[], false)
+            .unwrap();
+        let stale = c
+            .bundle_child("sp", "bao/v1", "bao/triggers/v1", "page", &[])
+            .unwrap();
+        let stores = provision_agent_stores(&c, "sp").unwrap();
+        assert_eq!(stores.triggers, stale["objectId"].as_str().unwrap());
+        c.upsert_record(
+            "sp",
+            &stores.triggers,
+            &stores.triggers_ds,
+            "t",
+            &json!({"key": "t"}),
+        )
+        .unwrap();
     }
 
     #[test]
