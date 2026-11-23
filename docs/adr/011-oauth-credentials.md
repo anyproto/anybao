@@ -302,6 +302,19 @@ seam safe rather than merely convenient:
   sibling, but stays a **separate ephemeral listener** — the control
   port is long-lived and shouldn't accept OAuth callbacks outside a
   flow window.
+
+  **Amended 2026-11-23 (the return to the app):** when consent ends,
+  granted or denied, the receiver answers the browser with a page. In
+  lib mode the embedder may name a return URL
+  (`ConfigBuilder::oauth_return_url` / `Config::oauth_return_url`, a
+  further ADR-009 §6 surface; any-ui passes its build's own deep-link
+  scheme, `any://` or `any-nightly://`):
+  the page sends the browser there, so the OS brings the app forward
+  instead of leaving the human on a dead tab, and keeps a link for a
+  browser that asks before opening an app. The URL is the embedder's,
+  never the request's — a redirect target taken from the callback
+  would be an open redirect. Without one the page stays plain text
+  ("you can close this tab"), the CLI's path.
 - **B. Delegated (designed here, not built).** For a remote `anyrt`:
   the human isn't at the serve machine, so the *receiver* moves to the
   client — transport A's listener, relocated. The host emits a request

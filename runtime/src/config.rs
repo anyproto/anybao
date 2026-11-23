@@ -202,6 +202,12 @@ pub struct Config {
     /// browser — the serve may be a headless daemon. None = system
     /// browser, then the host log.
     pub consent_hook: Option<crate::oauth::ConsentHook>,
+    /// Lib-mode return from consent (ADR-011 §5.1): where the consent
+    /// receiver's page sends the browser once consent ends, granted or
+    /// denied — the embedder's own URL scheme (any-ui: its build's
+    /// deep-link scheme, `any://` or `any-nightly://`), so the OS brings
+    /// the app forward. None = a plain "you can close this tab" page.
+    pub oauth_return_url: Option<String>,
 }
 
 impl Default for Config {
@@ -222,6 +228,7 @@ impl Default for Config {
             secret_overrides: BTreeMap::new(),
             config_overrides: BTreeMap::new(),
             consent_hook: None,
+            oauth_return_url: None,
         }
     }
 }
@@ -270,6 +277,13 @@ impl ConfigBuilder {
         f: impl Fn(crate::oauth::ConsentRequest) + Send + Sync + 'static,
     ) -> Self {
         self.cfg.consent_hook = Some(crate::oauth::ConsentHook(std::sync::Arc::new(f)));
+        self
+    }
+
+    /// Send the browser back to the app when consent ends (ADR-011
+    /// §5.1) — the embedder's own URL scheme, e.g. `any://`.
+    pub fn oauth_return_url(mut self, v: impl Into<String>) -> Self {
+        self.cfg.oauth_return_url = Some(v.into());
         self
     }
 
