@@ -109,7 +109,8 @@ def test_get_member_reads_me_or_one_identity():
     c = client(fx)
     assert c.get_member("s1")["permission"] == "owner"
     assert c.get_member("s1", "A2") == {"identity": "A2", "name": "Bo",
-                                        "permission": "reader", "status": "active"}
+                                        "permission": "reader", "status": "active",
+                                        "uri": "any://u/A2"}
     assert [p for _, p, _ in fx.calls] == ["/v1/spaces/s1/members/me",
                                            "/v1/spaces/s1/members/A2"]
 

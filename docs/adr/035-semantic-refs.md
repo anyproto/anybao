@@ -424,6 +424,20 @@ There is no inverse. The model never holds a uri to turn into a
 handle: every link it reads arrived as a handle through the wall
 (§5), and a call's result is rendered the same way.
 
+**People (amended 2026-11-24).** A person is a link of kind `u`
+(`any://u/<identity>`), and the wall already gives it a handle. Two
+gaps made a model lose minutes in a staging run: `getRef` refused a
+`u` link, and the methods that return a bare `identity` (`me`,
+`list_members`, `get_member`, `get_identity`, `find_identities`) gave
+no link, so there was no handle for a person the model knew only by
+identity. A model then tried to build one by hand, which the wall
+cannot expand, and the `member` property rejected the result. Now
+`getRef("any://u/<identity>")` returns `{kind: "user", identity, uri}`
+(no `spaceId`, no table lookup), and every person row from those five
+methods carries `uri`, which the wall turns into a handle like any
+other link. The bare `identity` stays for joins on `creator` and
+`author`. `_any` says a `member` property takes the `uri`.
+
 `_core` (ADR-005 §5) gains a short paragraph: *the `[refs: …]` line
 on a message names the things this conversation recently touched;
 pass a handle from it, copied whole, to `getRef`: it gives the ref's

@@ -2490,7 +2490,10 @@ class _Client:
     # mention links (any docs/08-clients.md § modifiedBy)
     @_public('getter')
     def list_members(self, space):
-        """The space's members → [{identity, name, permission, status}], active first.
+        """The space's members → [{identity, name, permission, status, uri}], active first.
+
+        `uri` is `any://u/<identity>`: the link a `member` property takes
+        (assignee, requester). A bare `identity` there is rejected.
 
         `identity` is the id that a chat message's `creator`, an object's
         `author`/`modifiedBy` carry — join on it to name who wrote what.
@@ -2501,7 +2504,8 @@ class _Client:
         rows = self._members_cache.get(space)
         if rows is None:
             r = self._call("get", f"/v1/spaces/{space}/members")
-            rows = [{k: m.get(k) for k in ("identity", "name", "permission", "status")}
+            rows = [self._with_uri({k: m.get(k) for k in
+                                    ("identity", "name", "permission", "status")})
                     for m in r.get("members") or []]
             rows.sort(key=lambda m: m.get("status") != "active")
             self._members_cache[space] = rows
@@ -2509,7 +2513,9 @@ class _Client:
 
     @_public('getter')
     def get_member(self, space, identity=None):
-        """One member of the space → {identity, name, permission, status}; None if not a member.
+        """One member of the space → {identity, name, permission, status, uri}, or None.
+
+        `uri` (`any://u/<identity>`) is the value a `member` property takes.
 
         Without `identity`: this account, so `permission` (owner /
         writer / reader) says what the agent may do in the space
@@ -2524,7 +2530,8 @@ class _Client:
             raise
         if not r.get("identity"):
             return None
-        return {k: r.get(k) for k in ("identity", "name", "permission", "status")}
+        return self._with_uri({k: r.get(k) for k in
+                               ("identity", "name", "permission", "status")})
 
     # --- sharing: invites, the guest key, access control (parity §C10) --------
     # Every write here changes who can read or write a space. The
@@ -2728,6 +2735,16 @@ class _Client:
         (list_members). The space stays, private to the owner."""
         return self._acl(space, "stop-sharing")
 
+    @staticmethod
+    def _with_uri(row):
+        """A person row plus its `uri` (`any://u/<identity>`): the link a
+        `member` property takes, and the form the model wall turns into a
+        handle (ADR-035). The bare `identity` stays for joins."""
+        if row and row.get("identity"):
+            row = dict(row)
+            row["uri"] = f"any://u/{row['identity']}"
+        return row
+
     # the account-global identities directory: every account this one
     # has met in a shared space, with the spaces shared (the server's
     # GET /v1/identities; docs/19-links.md § u — identities)
@@ -2736,13 +2753,16 @@ class _Client:
     def _identities(self):
         if self._identities_cache is None:
             r = self._call("get", "/v1/identities")
-            self._identities_cache = [{k: i.get(k) for k in self._IDENTITY_KEYS if k in i}
-                                      for i in r.get("identities") or []]
+            self._identities_cache = [
+                self._with_uri({k: i.get(k) for k in self._IDENTITY_KEYS if k in i})
+                for i in r.get("identities") or []]
         return self._identities_cache
 
     @_public('getter', scoped=False)
     def get_identity(self, identity):
-        """One account id → {identity, name, description?, spaceIds}, or None.
+        """One account id → {identity, name, description?, spaceIds, uri}, or None.
+
+        `uri` (`any://u/<identity>`) is the value a `member` property takes.
 
         No space needed: the account-global directory knows every account
         this one has met in a shared space — a chat `creator`, an object's
@@ -2757,11 +2777,13 @@ class _Client:
             raise
         if not r.get("identity"):
             return None
-        return {k: r.get(k) for k in self._IDENTITY_KEYS if k in r}
+        return self._with_uri({k: r.get(k) for k in self._IDENTITY_KEYS if k in r})
 
     @_public('getter', scoped=False)
     def find_identities(self, name):
-        """A display name → [{identity, name, description?, spaceIds}], exact first.
+        """A display name → [{identity, name, description?, spaceIds, uri}], exact first.
+
+        `uri` (`any://u/<identity>`) is the value a `member` property takes.
 
         No space needed: a case-insensitive match on the account-global
         directory (every account met in a shared space) — exact names
@@ -2783,14 +2805,16 @@ class _Client:
 
     @_public('getter', scoped=False)
     def me(self):
-        """This account → {identity, name}: the user this agent runs as.
+        """This account → {identity, name, uri}: the user this agent runs as.
+
+        `uri` is `any://u/<identity>`, the value a `member` property takes.
 
         `identity` is the account id (`GET /v1/account` → `id`), the same
         encoding as `creator` / `author` / `modifiedBy` and a members row's
         `identity`; `name` is the account's display name."""
         r = self._call("get", "/v1/account")
-        return {"identity": r.get("id"),
-                "name": (r.get("metadata") or {}).get("name")}
+        return self._with_uri({"identity": r.get("id"),
+                               "name": (r.get("metadata") or {}).get("name")})
 
     # --- the account, this device, a space's private settings (parity §C10) ---
     def _raw(self, verb, path, data=None, mime=None):
