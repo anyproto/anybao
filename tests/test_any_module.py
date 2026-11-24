@@ -114,6 +114,40 @@ def test_known_codes_carry_recovery_hint_verbatim_message():
     assert "(hint:" in text and "strict body" in text
 
 
+def test_error_details_reason_reaches_the_agent():
+    # The server names the rule a write broke in details.reason. The
+    # model reads str(e); without the reason it guessed for minutes.
+    reason = 'member "A82Z" must be an "any://u/<identity>" URI'
+    fx = wire(status=400, replies={
+        "": {"error": {"code": "property.format_violation",
+                       "message": "value does not fit the property's descriptor",
+                       "details": {"format": "member", "propId": "p1",
+                                   "reason": reason}}}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as ei:
+        g["_Client"]("http://any").query("s", "o", "d")
+    text = str(ei.value)
+    assert "value does not fit the property's descriptor" in text
+    assert reason in text
+    assert ei.value.details["format"] == "member"
+
+
+def test_error_details_without_reason_are_compact_and_bounded():
+    fx = wire(status=400, replies={
+        "": {"error": {"code": "x.y", "message": "m",
+                       "details": {"big": "z" * 5000}}}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as ei:
+        g["_Client"]("http://any").query("s", "o", "d")
+    assert len(str(ei.value)) < 450
+    # no details, no suffix
+    fx = wire(status=404, replies={"": {"error": {"code": "a.b", "message": "no"}}})
+    g = load(fx)
+    with pytest.raises(g["AnyError"]) as ei:
+        g["_Client"]("http://any").query("s", "o", "d")
+    assert str(ei.value) == "404 a.b: no"
+
+
 def test_nul_sanitized_on_write():
     fx = wire()
     client(fx).modify("s1", {"body": "before\x00after", "nested": {"x": ["a\x00b"]}})

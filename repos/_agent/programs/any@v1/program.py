@@ -295,16 +295,40 @@ def _guard_filter(filt, time_keys, kind_of=None):
             _check_time_literal(k, "an instant (datetime)", v)
 
 
+def _error_reason(details):
+    """The server's own explanation, from the error envelope's `details`.
+
+    A rejected write names the rule it broke (`details.reason`, e.g. a
+    member value that must be an `any://u/<identity>` URI). The message
+    alone says only that something does not fit, so the agent guessed
+    for minutes. Without a `reason`, a short compact form of the
+    details is shown; the text stays bounded."""
+    if not isinstance(details, dict) or not details:
+        return ""
+    reason = details.get("reason")
+    if isinstance(reason, str) and reason:
+        return reason[:400]
+    try:
+        text = json.dumps(details, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return ""
+    return text[:300]
+
+
 class AnyError(Exception):
     """A >=400 reply, decoded from the server's error envelope
     `{"error": {"code", "message"}}` — message relayed verbatim, plus
     a client-side recovery hint for known codes."""
 
-    def __init__(self, status, code, message):
+    def __init__(self, status, code, message, details=None):
         self.status = status
         self.code = code
         self.message = message
+        self.details = details
         text = f"{status} {code}: {message}"
+        why = _error_reason(details)
+        if why:
+            text += f" ({why})"
         if code in _HINTS:
             text += f" (hint: {_HINTS[code]})"
         super().__init__(text)
@@ -730,7 +754,7 @@ class _Client:
                 data = {}
             err = data.get("error", {}) if isinstance(data, dict) else {}
             raise AnyError(reply["status"], err.get("code", "unknown"),
-                           err.get("message", ""))
+                           err.get("message", ""), err.get("details"))
         return json.loads(raw) if raw else {}
 
     # --- space-name resolution (ADR-010 §8) ----------------------------------
@@ -2812,7 +2836,7 @@ class _Client:
                 data = {}
             err = data.get("error", {}) if isinstance(data, dict) else {}
             raise AnyError(reply["status"], err.get("code", "unknown"),
-                           err.get("message", ""))
+                           err.get("message", ""), err.get("details"))
         return reply
 
     def _icon(self, path):
@@ -6285,7 +6309,7 @@ class _Client:
                 data = {}
             err = data.get("error", {}) if isinstance(data, dict) else {}
             raise AnyError(reply["status"], err.get("code", "unknown"),
-                           err.get("message", ""))
+                           err.get("message", ""), err.get("details"))
         mime = (reply.get("headers") or {}).get("content-type", "application/octet-stream")
         mime = mime.split(";", 1)[0].strip()
         # a text/* file comes back as text (ADR-026 §3) — still a handle
@@ -6325,7 +6349,7 @@ class _Client:
                 data = {}
             err = data.get("error", {}) if isinstance(data, dict) else {}
             raise AnyError(reply["status"], err.get("code", "unknown"),
-                           err.get("message", ""))
+                           err.get("message", ""), err.get("details"))
         info = json.loads(raw) if isinstance(raw, str) and raw else {}
         if info.get("fileId"):
             info["uri"] = f"any://f/{space}/{info['fileId']}"
