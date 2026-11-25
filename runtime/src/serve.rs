@@ -2007,6 +2007,7 @@ pub fn start(mut cfg: Config) -> Result<AgentHandle> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut oauth_state = crate::oauth::OauthState::new(crate::oauth::builtin_providers(), persist);
     oauth_state.consent = cfg.consent_hook.clone();
+    oauth_state.return_url = cfg.oauth_return_url.clone();
     oauth_state.shutdown = shutdown.clone();
     oauth_state.source = secret_store
         .clone()

@@ -150,9 +150,11 @@ pub struct OauthState {
     /// `.account`) — mirrors the synced store records.
     meta: Mutex<BTreeMap<String, Value>>,
     pub persist: Option<Box<dyn SecretPersist>>,
-    /// Wiring sets these before the Arc: lib-mode consent delivery and
+    /// Wiring sets these before the Arc: lib-mode consent delivery, the
+    /// lib-mode return URL the receiver's page sends the browser to, and
     /// the serve shutdown flag flow threads observe.
     pub consent: Option<ConsentHook>,
+    pub return_url: Option<String>,
     pub shutdown: Arc<AtomicBool>,
     /// Long-lived client for token-endpoint calls.
     agent: ureq::Agent,
@@ -163,6 +165,22 @@ fn now_s() -> f64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+/// Escape text for an HTML attribute or element body.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn fail(type_: &str, message: String) -> EffectFailure {
@@ -187,6 +205,7 @@ impl OauthState {
             meta: Mutex::new(BTreeMap::new()),
             persist,
             consent: None,
+            return_url: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             agent: ureq::Agent::new_with_config(
                 ureq::Agent::config_builder()
@@ -705,6 +724,31 @@ impl OauthState {
         );
     }
 
+    /// The receiver's last word to the browser once consent ends (ADR-011
+    /// §5.1). With an embedder return URL the page sends the browser
+    /// there — the app's own scheme, so the OS brings the app forward —
+    /// and keeps a link for a browser that asks first or refuses.
+    /// Without one it is the plain text the CLI has always shown.
+    fn finished_page(&self, outcome: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+        let Some(url) = &self.return_url else {
+            return tiny_http::Response::from_string(format!("{outcome} — you can close this tab"));
+        };
+        let page = format!(
+            "<!doctype html>\n\
+             <meta charset=\"utf-8\">\n\
+             <meta name=\"color-scheme\" content=\"light dark\">\n\
+             <title>{outcome}</title>\n\
+             <p>{outcome} — returning you to the app. You can close this tab.</p>\n\
+             <p><a id=\"return\" href=\"{href}\">Return to the app</a></p>\n\
+             <script>location.href = document.getElementById(\"return\").href</script>\n",
+            href = html_escape(url),
+        );
+        let html =
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                .expect("static header is valid");
+        tiny_http::Response::from_string(page).with_header(html)
+    }
+
     /// The receiver: single-use, bounded by the 5-minute window and the
     /// shutdown flag; `state` mismatch tears it down (a forged or
     /// replayed redirect gets no retries against a live verifier).
@@ -754,9 +798,7 @@ impl OauthState {
                 ));
             }
             if let Some(e) = q.get("error") {
-                let _ = req.respond(tiny_http::Response::from_string(
-                    "authorization was denied — you can close this tab",
-                ));
+                let _ = req.respond(self.finished_page("authorization was denied"));
                 break Err((
                     "consent_denied".into(),
                     format!("the provider reported {e:?}"),
@@ -771,9 +813,7 @@ impl OauthState {
                     "the redirect carried neither code nor error".into(),
                 ));
             };
-            let _ = req.respond(tiny_http::Response::from_string(
-                "authorized — you can close this tab",
-            ));
+            let _ = req.respond(self.finished_page("authorized"));
             break self.exchange_code(&provider, &desc, code, &redirect_uri, &verifier);
         };
 
@@ -1268,6 +1308,19 @@ mod tests {
         Arc<Mutex<Option<String>>>,
         Arc<AtomicUsize>,
     ) {
+        connect_state_returning(token_url, revoke_url, None)
+    }
+
+    /// `connect_state` with the embedder's return URL set (§5.1).
+    fn connect_state_returning(
+        token_url: &str,
+        revoke_url: &str,
+        return_url: Option<&str>,
+    ) -> (
+        Arc<OauthState>,
+        Arc<Mutex<Option<String>>>,
+        Arc<AtomicUsize>,
+    ) {
         let mut providers = test_provider(token_url);
         let p = providers.get_mut("testprov").unwrap();
         p.revoke_url = revoke_url.into();
@@ -1281,6 +1334,7 @@ mod tests {
             count.fetch_add(1, Ordering::SeqCst);
             *slot.lock().unwrap() = Some(req.url);
         })));
+        state.return_url = return_url.map(String::from);
         let state = Arc::new(state);
         let mut seeds = BTreeMap::from([
             (
@@ -1304,6 +1358,17 @@ mod tests {
         wrong_state: bool,
         error: Option<&str>,
     ) -> BTreeMap<String, String> {
+        consent_callback(url_slot, code, wrong_state, error).0
+    }
+
+    /// `complete_consent` that also returns what the browser was shown:
+    /// the receiver page's `(content-type, body)`.
+    fn consent_callback(
+        url_slot: &Arc<Mutex<Option<String>>>,
+        code: &str,
+        wrong_state: bool,
+        error: Option<&str>,
+    ) -> (BTreeMap<String, String>, Option<(String, String)>) {
         let deadline = Instant::now() + Duration::from_secs(3);
         let url = loop {
             if let Some(u) = url_slot.lock().unwrap().clone() {
@@ -1319,12 +1384,83 @@ mod tests {
             Some(e) => format!("{redirect}?error={e}&state={state_tok}"),
             None => format!("{redirect}?code={code}&state={state_tok}"),
         };
-        let _ = ureq::get(&cb)
+        let page = ureq::get(&cb)
             .config()
             .timeout_global(Some(Duration::from_secs(2)))
             .build()
-            .call();
-        q
+            .call()
+            .ok()
+            .map(|mut resp| {
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let body = resp.body_mut().read_to_string().unwrap_or_default();
+                (content_type, body)
+            });
+        (q, page)
+    }
+
+    #[test]
+    fn consent_page_sends_the_browser_back_to_the_app() {
+        // granted: the page hands the browser to the embedder's scheme
+        // (so the OS brings the app forward) and keeps a link to it
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let (state, url_slot, _) = connect_state_returning(&token_url, "", Some("any://"));
+        let slot = url_slot.clone();
+        let clicker =
+            std::thread::spawn(move || consent_callback(&slot, "authcode1", false, None).1);
+        let out = state.connect("testprov", None, Some(5.0), None).unwrap();
+        let (content_type, body) = clicker.join().unwrap().expect("receiver answered");
+        assert_eq!(out["ok"], json!(true));
+        assert!(content_type.starts_with("text/html"), "{content_type}");
+        assert!(
+            body.contains("authorized — returning you to the app"),
+            "{body}"
+        );
+        assert!(body.contains(r#"<a id="return" href="any://">"#), "{body}");
+        assert!(body.contains("location.href"), "{body}");
+
+        // denied: the app reports the failure, so the browser goes back too
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let (state, url_slot, _) = connect_state_returning(&token_url, "", Some("any://"));
+        let slot = url_slot.clone();
+        let clicker =
+            std::thread::spawn(move || consent_callback(&slot, "", false, Some("access_denied")).1);
+        let err = state
+            .connect("testprov", None, Some(5.0), None)
+            .unwrap_err();
+        let (content_type, body) = clicker.join().unwrap().expect("receiver answered");
+        assert_eq!(err.type_, "consent_denied");
+        assert!(content_type.starts_with("text/html"), "{content_type}");
+        assert!(
+            body.contains("authorization was denied — returning you to the app"),
+            "{body}"
+        );
+        assert!(body.contains(r#"href="any://""#), "{body}");
+    }
+
+    #[test]
+    fn consent_page_without_a_return_url_is_plain_text() {
+        let (token_url, _) = capturing_endpoint(full_token_response());
+        let (state, url_slot, _) = connect_state(&token_url, "");
+        let slot = url_slot.clone();
+        let clicker =
+            std::thread::spawn(move || consent_callback(&slot, "authcode1", false, None).1);
+        state.connect("testprov", None, Some(5.0), None).unwrap();
+        let (content_type, body) = clicker.join().unwrap().expect("receiver answered");
+        assert!(content_type.starts_with("text/plain"), "{content_type}");
+        assert_eq!(body, "authorized — you can close this tab");
+    }
+
+    #[test]
+    fn html_escape_covers_attribute_breakouts() {
+        assert_eq!(
+            html_escape(r#"a"b'c<d>&e"#),
+            "a&quot;b&#39;c&lt;d&gt;&amp;e"
+        );
     }
 
     #[test]
