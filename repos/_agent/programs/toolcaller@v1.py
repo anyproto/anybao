@@ -245,8 +245,9 @@ def _refs_line(table):
 _GET_REF_SRC = '''
 def getRef(x):
     """A ref of this conversation → `{kind, name, spaceId, objectId |
-    fileId, uri, type?}`. `x`: a handle, copied whole from the
-    `[refs: …]` line or from any link you were shown. A space id works
+    fileId, uri, type?}`; a person → `{kind: "user", identity, uri}`.
+    `x`: a handle, copied whole from the `[refs: …]` line or from any
+    link you were shown. A space id works
     too, and so does a name on the refs line while one ref has it.
     `spaceId` + `objectId` go where a call takes them; `uri` is the
     link. An unknown or ambiguous argument raises — nothing is guessed."""
@@ -281,7 +282,10 @@ def getRef(x):
                           "uri": f"any://f/{seg[1]}/{seg[2]}"})
         if seg[0] == "s" and len(seg) == 2:
             return known({"kind": "space", "spaceId": seg[1]})
-        raise ValueError(f"getRef: not an object, file or space link: {x}")
+        if seg[0] == "u" and len(seg) == 2 and seg[1]:
+            # a person: no space; the link is what a `member` property takes
+            return {"kind": "user", "identity": seg[1], "uri": f"any://u/{seg[1]}"}
+        raise ValueError(f"getRef: not an object, file, space or user link: {x}")
     if x.startswith("bafy") and "." in x and " " not in x:
         return known({"kind": "space", "spaceId": x})
     want = x.lower()

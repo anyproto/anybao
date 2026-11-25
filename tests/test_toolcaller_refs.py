@@ -153,6 +153,15 @@ TABLE = [
 ]
 
 
+def test_get_ref_takes_a_user_link():
+    # a person has no space; the link is the value a `member` property takes
+    g = get_ref(TABLE)
+    assert g("any://u/A82ZWzRyk") == {"kind": "user", "identity": "A82ZWzRyk",
+                                      "uri": "any://u/A82ZWzRyk"}
+    with pytest.raises(ValueError, match="user link"):
+        g("any://u/")
+
+
 def test_get_ref_by_uri_in_and_out_of_the_table():
     g = get_ref(TABLE)
     assert g(DUNE_URI) == TABLE[0]

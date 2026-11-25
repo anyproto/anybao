@@ -2991,10 +2991,21 @@ def test_list_members_trims_rows_and_puts_active_first():
     c = client(fx)
     rows = c.list_members("sp")
     assert rows == [
-        {"identity": "A1", "name": "tolya", "permission": "owner", "status": "active"},
-        {"identity": "A2", "name": "gone", "permission": "writer", "status": "removed"}]
+        {"identity": "A1", "name": "tolya", "permission": "owner", "status": "active",
+         "uri": "any://u/A1"},
+        {"identity": "A2", "name": "gone", "permission": "writer", "status": "removed",
+         "uri": "any://u/A2"}]
     c.list_members("sp")                       # cached per run
     assert fx.calls == [("GET", "/v1/spaces/sp/members", None)]
+
+
+def test_get_member_row_carries_the_member_property_link():
+    fx = wire(replies={"/members/me": {"identity": "A1", "name": "tolya",
+                                       "permission": "owner", "status": "active",
+                                       "iconCid": "x"}})
+    assert client(fx).get_member("sp") == {
+        "identity": "A1", "name": "tolya", "permission": "owner", "status": "active",
+        "uri": "any://u/A1"}
 
 
 def test_get_identity_is_the_account_global_directory_row():
@@ -3002,7 +3013,7 @@ def test_get_identity_is_the_account_global_directory_row():
                                              "description": "pm", "spaceIds": ["sp", "sp2"]}})
     c = client(fx)
     assert c.get_identity("A9") == {"identity": "A9", "name": "left", "description": "pm",
-                                    "spaceIds": ["sp", "sp2"]}
+                                    "spaceIds": ["sp", "sp2"], "uri": "any://u/A9"}
     assert fx.calls == [("GET", "/v1/identities/A9", None)]   # no space on the wire
 
 
@@ -3021,9 +3032,10 @@ def test_find_identities_matches_names_exact_first_without_a_space():
     fx = wire(replies={"/v1/identities": directory})
     c = client(fx)
     assert c.find_identities(" Anton ") == [
-        {"identity": "A2", "name": "anton", "spaceIds": ["sp", "sp2"]},
-        {"identity": "A1", "name": "Anton B", "spaceIds": ["sp"]}]
-    assert c.find_identities("gus") == [{"identity": "A3", "name": "Gustavo", "spaceIds": ["sp"]}]
+        {"identity": "A2", "name": "anton", "spaceIds": ["sp", "sp2"], "uri": "any://u/A2"},
+        {"identity": "A1", "name": "Anton B", "spaceIds": ["sp"], "uri": "any://u/A1"}]
+    assert c.find_identities("gus") == [{"identity": "A3", "name": "Gustavo", "spaceIds": ["sp"],
+                                         "uri": "any://u/A3"}]
     assert c.find_identities("nobody") == []
     assert c.find_identities("") == []
     assert fx.calls == [("GET", "/v1/identities", None)]   # one read, cached per run
@@ -3032,7 +3044,7 @@ def test_find_identities_matches_names_exact_first_without_a_space():
 def test_me_is_the_account_identity_and_name():
     fx = wire(replies={"/v1/account": {"id": "A1", "metadata": {"name": "tolya", "iconCid": "x"},
                                        "techSpaceId": "t"}})
-    assert client(fx).me() == {"identity": "A1", "name": "tolya"}
+    assert client(fx).me() == {"identity": "A1", "name": "tolya", "uri": "any://u/A1"}
     assert fx.calls == [("GET", "/v1/account", None)]
 
 
